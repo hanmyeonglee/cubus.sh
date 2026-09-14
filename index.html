@@ -125,12 +125,14 @@
       const MASTER_HALF = .8;
       const MINI_GRID_HALF = .34 * .85;
       const MINI_CLUSTER_HALF = MASTER_HALF * .5;
+      const RETICLE_SIZE = 96;
       const EDGE_COLOR = '#f4ffff';
       const VECTOR_COLOR = '#51f7d1';
       const SIGNAL_COLOR = '#00ff66';
       const FACE_COLOR = '#07121a';
       const GLITCH_CYAN = '#00f0ff';
       const GLITCH_MAGENTA = '#ff2bb5';
+      const RETICLE_COLOR = '#00f0ff';
       const FONT_STACK = '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace';
 
       const navItems = [
@@ -152,6 +154,7 @@
       };
       const easeOutCubic = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
       const randomBetween = (min, max) => min + Math.random() * (max - min);
+      const randomSigned = (min, max) => randomBetween(min, max) * (Math.random() < .5 ? -1 : 1);
       const wrapAngle = (angle) => {
         while (angle > Math.PI) angle -= TAU;
         while (angle < -Math.PI) angle += TAU;
@@ -395,9 +398,18 @@
         }
       ];
 
-      function transformedVertices(cube) {
-        return cubeVertices.map((vertex) => {
-          const local = scaleVec(vertex, cube.half);
+      function transformedVertices(cube, options = {}) {
+        const vertexJitter = options.vertexJitter || 0;
+        const seed = options.seed || 0;
+        return cubeVertices.map((vertex, index) => {
+          let local = scaleVec(vertex, cube.half);
+          if (vertexJitter) {
+            local = add(local, vec(
+              hashNoise(seed + index * 17.11) * vertexJitter,
+              hashNoise(seed + index * 29.37 + 11) * vertexJitter,
+              hashNoise(seed + index * 43.73 + 23) * vertexJitter
+            ));
+          }
           return add(cube.position, rotatePoint(local, cube.rotation));
         });
       }
@@ -410,14 +422,9 @@
         return rotateNormal(face.normal, cube.rotation);
       }
 
-      function makeProjectedPoint(cube, localPoint, key, options) {
+      function makeProjectedPoint(cube, localPoint, options) {
         const world = add(cube.position, rotatePoint(scaleVec(localPoint, cube.half), cube.rotation));
         const projected = worldToScreen(world);
-        const jitter = options.jitter || 0;
-        if (jitter) {
-          projected.x += hashNoise(options.seed + key * 13.17) * jitter;
-          projected.y += hashNoise(options.seed + key * 4.71 + 31) * jitter;
-        }
         projected.x += options.offsetX || 0;
         projected.y += options.offsetY || 0;
         projected.world = world;
@@ -440,11 +447,11 @@
       }
 
       function drawLocalStroke(cube, points, color, width, options, alpha = 1) {
-        const projected = points.map((point, index) => {
+        const projected = points.map((point) => {
           const local = Array.isArray(point)
             ? vec(point[0], point[1], point[2] || 0)
             : point;
-          return makeProjectedPoint(cube, local, 400 + index * 17, options);
+          return makeProjectedPoint(cube, local, options);
         });
         strokeProjectedPath(projected, color, width, alpha);
       }
@@ -491,7 +498,7 @@
       function renderCube(cube, options = {}) {
         const settings = {
           seed: 0,
-          jitter: 0,
+          vertexJitter: 0,
           offsetX: 0,
           offsetY: 0,
           wireOnly: false,
@@ -502,13 +509,9 @@
           ...options
         };
 
-        const worldVertices = transformedVertices(cube);
-        const projectedVertices = worldVertices.map((world, index) => {
+        const worldVertices = transformedVertices(cube, settings);
+        const projectedVertices = worldVertices.map((world) => {
           const projected = worldToScreen(world);
-          if (settings.jitter) {
-            projected.x += hashNoise(settings.seed + index * 13.17) * settings.jitter;
-            projected.y += hashNoise(settings.seed + index * 4.71 + 31) * settings.jitter;
-          }
           projected.x += settings.offsetX;
           projected.y += settings.offsetY;
           projected.world = world;
@@ -656,6 +659,7 @@
       // Glitch scheduler and procedural Web Audio
       // -------------------------------------------------------------------
       const glitch = {
+        enabled: true,
         active: false,
         startedAt: 0,
         duration: 0,
@@ -665,6 +669,16 @@
       };
 
       let audioContext = null;
+
+      function makeDistortionCurve(amount = 45) {
+        const samples = 256;
+        const curve = new Float32Array(samples);
+        for (let i = 0; i < samples; i += 1) {
+          const x = i * 2 / (samples - 1) - 1;
+          curve[i] = ((1 + amount) * x) / (1 + amount * Math.abs(x));
+        }
+        return curve;
+      }
 
       function ensureAudio() {
         if (!audioContext) {
@@ -679,33 +693,81 @@
       function playGlitchBurst(strength = 1) {
         const audio = ensureAudio();
         if (!audio) return;
-        const duration = randomBetween(.10, .19);
+        const duration = randomBetween(.15, .25);
         const sampleCount = Math.max(1, Math.floor(audio.sampleRate * duration));
         const buffer = audio.createBuffer(1, sampleCount, audio.sampleRate);
         const data = buffer.getChannelData(0);
-        let last = 0;
+        let b0 = 0;
+        let b1 = 0;
+        let b2 = 0;
+        let b3 = 0;
+        let b4 = 0;
+        let b5 = 0;
+        let b6 = 0;
         for (let i = 0; i < sampleCount; i += 1) {
-          const bitNoise = Math.random() > .5 ? 1 : -1;
           const white = Math.random() * 2 - 1;
-          last = last * .56 + (white * .76 + bitNoise * .24) * .44;
-          data[i] = last * (1 - i / sampleCount) * (Math.random() > .82 ? 1.8 : 1);
+          // Paul Kellet's compact pink-noise filter, mixed with white noise,
+          // keeps the burst gritty at the top while retaining body below it.
+          b0 = .99886 * b0 + white * .0555179;
+          b1 = .99332 * b1 + white * .0750759;
+          b2 = .96900 * b2 + white * .1538520;
+          b3 = .86650 * b3 + white * .3104856;
+          b4 = .55000 * b4 + white * .5329522;
+          b5 = -.7616 * b5 - white * .0168980;
+          const pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * .5362) * .11;
+          b6 = white * .115926;
+          const crackle = Math.random() > .91 ? randomSigned(.9, 1.5) : 1;
+          data[i] = (white * .63 + pink * .72) * crackle;
         }
 
         const source = audio.createBufferSource();
         const bandpass = audio.createBiquadFilter();
-        const gain = audio.createGain();
+        const noiseGain = audio.createGain();
+        const tone = audio.createOscillator();
+        const distortion = audio.createWaveShaper();
+        const toneGain = audio.createGain();
+        const output = audio.createGain();
         source.buffer = buffer;
         bandpass.type = 'bandpass';
-        bandpass.frequency.setValueAtTime(randomBetween(850, 2600), audio.currentTime);
-        bandpass.frequency.exponentialRampToValueAtTime(randomBetween(2400, 6800), audio.currentTime + duration * .45);
-        bandpass.Q.setValueAtTime(randomBetween(.65, 1.8), audio.currentTime);
         const now = audio.currentTime;
-        gain.gain.setValueAtTime(.0001, now);
-        gain.gain.exponentialRampToValueAtTime(.17 * strength, now + .008);
-        gain.gain.exponentialRampToValueAtTime(.0001, now + duration);
-        source.connect(bandpass).connect(gain).connect(audio.destination);
+        bandpass.frequency.setValueAtTime(800, now);
+        bandpass.frequency.exponentialRampToValueAtTime(4000, now + duration * .62);
+        bandpass.frequency.exponentialRampToValueAtTime(1500, now + duration);
+        bandpass.Q.setValueAtTime(6.5, now);
+
+        // Chopped micro-pulses turn the buffer into a stuttering static burst
+        // rather than one continuous noise hit.
+        const pulseCount = 8 + Math.floor(Math.random() * 6);
+        const pulseWidth = duration / pulseCount;
+        noiseGain.gain.setValueAtTime(.0001, now);
+        for (let i = 0; i < pulseCount; i += 1) {
+          const pulseStart = now + i * pulseWidth;
+          const pulseEnd = pulseStart + pulseWidth * randomBetween(.38, .86);
+          noiseGain.gain.setValueAtTime(.0001, pulseStart);
+          noiseGain.gain.exponentialRampToValueAtTime(.24 * strength, pulseStart + .0025);
+          noiseGain.gain.exponentialRampToValueAtTime(.0001, pulseEnd);
+        }
+        noiseGain.gain.setValueAtTime(.0001, now + duration);
+
+        // A very small distorted oscillator adds the electrical bzzzt bite.
+        tone.type = Math.random() > .5 ? 'square' : 'sawtooth';
+        tone.frequency.setValueAtTime(randomBetween(105, 190), now);
+        tone.frequency.exponentialRampToValueAtTime(randomBetween(620, 980), now + duration * .48);
+        tone.frequency.exponentialRampToValueAtTime(randomBetween(160, 280), now + duration);
+        distortion.curve = makeDistortionCurve(48);
+        distortion.oversample = '2x';
+        toneGain.gain.setValueAtTime(.0001, now);
+        toneGain.gain.exponentialRampToValueAtTime(.035 * strength, now + .01);
+        toneGain.gain.exponentialRampToValueAtTime(.0001, now + duration);
+        output.gain.setValueAtTime(.82, now);
+
+        source.connect(bandpass).connect(noiseGain).connect(output);
+        tone.connect(distortion).connect(toneGain).connect(output);
+        output.connect(audio.destination);
         source.start(now);
+        tone.start(now);
         source.stop(now + duration + .02);
+        tone.stop(now + duration + .02);
       }
 
       function playClickPop() {
@@ -721,7 +783,7 @@
         filter.type = 'highpass';
         filter.frequency.setValueAtTime(700, now);
         gain.gain.setValueAtTime(.0001, now);
-        gain.gain.exponentialRampToValueAtTime(.22, now + .004);
+        gain.gain.exponentialRampToValueAtTime(.08, now + .004);
         gain.gain.exponentialRampToValueAtTime(.0001, now + .085);
         oscillator.connect(filter).connect(gain).connect(audio.destination);
         oscillator.start(now);
@@ -730,16 +792,23 @@
       }
 
       function startGlitch(time, sound = true) {
+        if (!glitch.enabled) return;
         glitch.active = true;
         glitch.startedAt = time;
         glitch.duration = randomBetween(100, 200);
         glitch.seed = Math.random() * 10000;
         glitch.intensity = randomBetween(.72, 1.18);
         glitch.nextAt = time + randomBetween(4000, 8000);
+        triggerMasterRotationBoost(time);
         if (sound) playGlitchBurst(glitch.intensity);
       }
 
       function updateGlitch(time) {
+        if (!glitch.enabled) {
+          glitch.active = false;
+          glitch.intensity = 0;
+          return;
+        }
         if (!glitch.active && time >= glitch.nextAt) startGlitch(time, Boolean(audioContext));
         if (glitch.active) {
           const elapsed = time - glitch.startedAt;
@@ -753,50 +822,12 @@
         }
       }
 
-      function drawCubeGlitchSlices(hit, time, seed, strength) {
-        if (!hit || strength <= 0) return;
-        const bounds = hit.bounds;
-        const width = bounds.right - bounds.left;
-        const height = bounds.bottom - bounds.top;
-        const pad = clamp(Math.max(width, height) * .08, 4, 15);
-        const left = bounds.left - pad;
-        const top = bounds.top - pad;
-        const sliceWidth = width + pad * 2;
-        const sliceHeight = height + pad * 2;
-
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(left, top, sliceWidth, sliceHeight);
-        ctx.clip();
-        ctx.globalCompositeOperation = 'screen';
-        ctx.shadowBlur = 10 + strength * 13;
-
-        // These hard horizontal slices are clipped to the projected cube
-        // bounds, so the glitch never touches the surrounding atmosphere.
-        const lineCount = 3 + Math.floor(strength * 5);
-        for (let i = 0; i < lineCount; i += 1) {
-          const y = top + (.08 + Math.abs(Math.sin(seed * .017 + i * 17.41 + time * .0027)) * .84) * sliceHeight;
-          const offset = hashNoise(seed + i * 3.71) * (8 + strength * 18);
-          const lineHeight = 1 + Math.abs(Math.sin(seed + i * 2.3)) * (1.4 + strength * 2.8);
-          const cyan = i % 2 === 0;
-          ctx.fillStyle = cyan ? `rgba(0, 240, 255, ${.22 * strength})` : `rgba(255, 43, 181, ${.22 * strength})`;
-          ctx.shadowColor = cyan ? GLITCH_CYAN : GLITCH_MAGENTA;
-          ctx.fillRect(left + offset, y, sliceWidth, lineHeight);
-
-          // A short, displaced fragment gives the slice a sharper digital
-          // read than a uniform scanline.
-          ctx.globalAlpha = .9 * strength;
-          ctx.fillRect(left + offset * 1.65, y + lineHeight + 1, width * (.16 + (i % 3) * .12), 1.2);
-          ctx.globalAlpha = 1;
-        }
-
-        ctx.shadowBlur = 0;
-        ctx.globalAlpha = .72 * strength;
-        ctx.fillStyle = `rgba(255, 43, 181, ${.42 * strength})`;
-        ctx.fillRect(left + hashNoise(seed + 91) * 10, top + sliceHeight * .46, sliceWidth * .58, 1.5);
-        ctx.fillStyle = `rgba(0, 240, 255, ${.42 * strength})`;
-        ctx.fillRect(left + hashNoise(seed + 127) * 14, top + sliceHeight * .67, sliceWidth * .36, 1.5);
-        ctx.restore();
+      function disableGlitchAfterSplit() {
+        glitch.enabled = false;
+        glitch.active = false;
+        glitch.intensity = 0;
+        glitch.nextAt = Infinity;
+        master.rotationBoost = null;
       }
 
       // -------------------------------------------------------------------
@@ -808,6 +839,7 @@
         rotation: { x: .37, y: -.55, z: .18 },
         velocity: { x: .12, y: .22, z: -.075 },
         velocityTarget: { x: .12, y: .22, z: -.075 },
+        rotationBoost: null,
         driftAt: randomBetween(3000, 5000),
         hit: null
       };
@@ -823,6 +855,27 @@
         lastTime: performance.now(),
         frame: 0
       };
+
+      function triggerMasterRotationBoost(time) {
+        const base = {
+          x: randomSigned(.14, .27),
+          y: randomSigned(.24, .43),
+          z: randomSigned(.08, .17)
+        };
+        const burst = {
+          x: Math.sign(base.x) * (Math.abs(base.x) + randomBetween(.28, .5)),
+          y: Math.sign(base.y) * (Math.abs(base.y) + randomBetween(.42, .72)),
+          z: Math.sign(base.z) * (Math.abs(base.z) + randomBetween(.16, .3))
+        };
+        master.velocityTarget = base;
+        master.velocity = burst;
+        master.rotationBoost = {
+          startedAt: time,
+          duration: randomBetween(1200, 1800),
+          burstVelocity: burst
+        };
+        master.driftAt = time + randomBetween(3000, 5000);
+      }
 
       function makeMiniCube(index, column, row, depth) {
         return {
@@ -882,6 +935,10 @@
 
       function beginSplit(time) {
         if (app.state !== 'idle') return;
+        // The intentional click burst below is the final audio event. Once
+        // the core opens, the idle glitch scheduler and rotation boost stay
+        // permanently disabled so the eight destinations remain clean.
+        disableGlitchAfterSplit();
         ensureAudio();
         playClickPop();
         app.state = 'transition';
@@ -943,10 +1000,21 @@
           };
           master.driftAt = time + randomBetween(3000, 5000);
         }
+        let targetVelocity = master.velocityTarget;
+        if (master.rotationBoost) {
+          const progress = clamp((time - master.rotationBoost.startedAt) / master.rotationBoost.duration, 0, 1);
+          const decay = 1 - easeInOutCubic(progress);
+          targetVelocity = {
+            x: lerp(master.velocityTarget.x, master.rotationBoost.burstVelocity.x, decay),
+            y: lerp(master.velocityTarget.y, master.rotationBoost.burstVelocity.y, decay),
+            z: lerp(master.velocityTarget.z, master.rotationBoost.burstVelocity.z, decay)
+          };
+          if (progress >= 1) master.rotationBoost = null;
+        }
         const smoothing = 1 - Math.pow(.002, dt);
-        master.velocity.x = lerp(master.velocity.x, master.velocityTarget.x, smoothing);
-        master.velocity.y = lerp(master.velocity.y, master.velocityTarget.y, smoothing);
-        master.velocity.z = lerp(master.velocity.z, master.velocityTarget.z, smoothing);
+        master.velocity.x = lerp(master.velocity.x, targetVelocity.x, smoothing);
+        master.velocity.y = lerp(master.velocity.y, targetVelocity.y, smoothing);
+        master.velocity.z = lerp(master.velocity.z, targetVelocity.z, smoothing);
         master.rotation.x += master.velocity.x * dt;
         master.rotation.y += master.velocity.y * dt;
         master.rotation.z += master.velocity.z * dt;
@@ -1046,21 +1114,19 @@
 
       function drawTargetingBrackets(mini) {
         if (!mini.hit) return;
-        const bounds = mini.hit.bounds;
-        const width = bounds.right - bounds.left;
-        const height = bounds.bottom - bounds.top;
-        const pad = clamp(Math.max(width, height) * .12, 7, 14);
-        const left = bounds.left - pad;
-        const right = bounds.right + pad;
-        const top = bounds.top - pad;
-        const bottom = bounds.bottom + pad;
-        const arm = clamp(Math.min(width, height) * .22, 8, 17);
-        const centerX = (left + right) / 2;
-        const centerY = (top + bottom) / 2;
+        const center = worldToScreen(mini.position);
+        const half = RETICLE_SIZE / 2;
+        const left = center.x - half;
+        const right = center.x + half;
+        const top = center.y - half;
+        const bottom = center.y + half;
+        const arm = 15;
+        const centerX = center.x;
+        const centerY = center.y;
 
         ctx.save();
-        ctx.strokeStyle = SIGNAL_COLOR;
-        ctx.shadowColor = SIGNAL_COLOR;
+        ctx.strokeStyle = RETICLE_COLOR;
+        ctx.shadowColor = RETICLE_COLOR;
         ctx.shadowBlur = 12;
         ctx.lineWidth = 1.25;
         ctx.lineJoin = 'miter';
@@ -1099,7 +1165,7 @@
         ctx.lineTo(centerX, centerY + 4);
         ctx.stroke();
         ctx.globalAlpha = .9;
-        ctx.fillStyle = SIGNAL_COLOR;
+        ctx.fillStyle = RETICLE_COLOR;
         ctx.beginPath();
         ctx.arc(centerX, centerY, 1.45, 0, TAU);
         ctx.fill();
@@ -1111,6 +1177,7 @@
       // -------------------------------------------------------------------
       function renderMaster(time) {
         const glitchActive = glitch.active;
+        const frameSeed = glitch.seed + Math.floor(time / 16.6667);
         if (glitchActive) {
           // High-contrast cyan/magenta passes create a localized chromatic
           // split around the wireframe; the final white pass remains the
@@ -1121,8 +1188,8 @@
             edgeAlpha: .92 * glitch.intensity,
             offsetX: -7.5 * glitch.intensity,
             offsetY: 1.2 * glitch.intensity,
-            jitter: 4.6 * glitch.intensity,
-            seed: glitch.seed + 8
+            vertexJitter: .11 * glitch.intensity,
+            seed: frameSeed + 8
           });
           renderCube(master, {
             wireOnly: true,
@@ -1130,21 +1197,21 @@
             edgeAlpha: .96 * glitch.intensity,
             offsetX: 7.5 * glitch.intensity,
             offsetY: -1.2 * glitch.intensity,
-            jitter: 4.3 * glitch.intensity,
-            seed: glitch.seed + 29
+            vertexJitter: .105 * glitch.intensity,
+            seed: frameSeed + 29
           });
         }
         master.hit = renderCube(master, {
-          jitter: glitchActive ? 3.6 * glitch.intensity : 0,
-          seed: glitch.seed,
+          vertexJitter: glitchActive ? .085 * glitch.intensity : 0,
+          seed: frameSeed,
           edgeAlpha: glitchActive ? .96 : 1
         });
-        if (glitchActive) drawCubeGlitchSlices(master.hit, time, glitch.seed + 44, glitch.intensity);
       }
 
       function renderMini(mini, time) {
         const hovered = mini.hovered;
         const glitchActive = glitch.active;
+        const frameSeed = glitch.seed + Math.floor(time / 16.6667);
         const renderTarget = hovered ? { ...mini, half: mini.half * 1.09 } : mini;
         if (glitchActive) {
           renderCube(renderTarget, {
@@ -1153,8 +1220,8 @@
             edgeAlpha: .84 * glitch.intensity,
             offsetX: -4.5 * glitch.intensity,
             offsetY: .8 * glitch.intensity,
-            jitter: 3.1 * glitch.intensity,
-            seed: glitch.seed + mini.index * 9
+            vertexJitter: .075 * glitch.intensity,
+            seed: frameSeed + mini.index * 9
           });
           renderCube(renderTarget, {
             wireOnly: true,
@@ -1162,19 +1229,18 @@
             edgeAlpha: .88 * glitch.intensity,
             offsetX: 4.5 * glitch.intensity,
             offsetY: -.8 * glitch.intensity,
-            jitter: 2.9 * glitch.intensity,
-            seed: glitch.seed + mini.index * 11 + 29
+            vertexJitter: .07 * glitch.intensity,
+            seed: frameSeed + mini.index * 11 + 29
           });
         }
         mini.hit = renderCube(renderTarget, {
-          jitter: glitchActive ? 2.3 * glitch.intensity : 0,
-          seed: glitch.seed + mini.index,
+          vertexJitter: glitchActive ? .06 * glitch.intensity : 0,
+          seed: frameSeed + mini.index,
           edgeAlpha: hovered ? 1.35 : .92,
           edgeColor: hovered ? '#ffffff' : EDGE_COLOR,
           fillAlpha: hovered ? 1.16 : .88,
           textureAlpha: hovered ? 1.18 : .82
         });
-        if (glitchActive) drawCubeGlitchSlices(mini.hit, time, glitch.seed + mini.index * 97, glitch.intensity);
         if (hovered) {
           drawTargetingBrackets(mini);
         }
