@@ -8,7 +8,7 @@
   <style>
     :root {
       color-scheme: dark;
-      --void: #08080c;
+      --void: #05050e;
       --signal: #00ff66;
       --signal-dim: rgba(0, 255, 102, .58);
       --ice: #efffff;
@@ -122,10 +122,15 @@
       const TAU = Math.PI * 2;
       const CAMERA_Z = 7.8;
       const CAMERA_FOCAL = 6.7;
+      const MASTER_HALF = .8;
+      const MINI_GRID_HALF = .34 * .85;
+      const MINI_CLUSTER_HALF = MASTER_HALF * .5;
       const EDGE_COLOR = '#f4ffff';
       const VECTOR_COLOR = '#51f7d1';
       const SIGNAL_COLOR = '#00ff66';
       const FACE_COLOR = '#07121a';
+      const GLITCH_CYAN = '#00f0ff';
+      const GLITCH_MAGENTA = '#ff2bb5';
       const FONT_STACK = '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace';
 
       const navItems = [
@@ -273,24 +278,41 @@
       function drawBackground(time) {
         const w = viewport.width;
         const h = viewport.height;
-        const centerGlow = ctx.createRadialGradient(
-          viewport.centerX,
-          viewport.centerY - h * .05,
+        ctx.fillStyle = '#05050e';
+        ctx.fillRect(0, 0, w, h);
+
+        const cyanGlow = ctx.createRadialGradient(
+          viewport.centerX - w * .22,
+          viewport.centerY - h * .2,
           0,
-          viewport.centerX,
-          viewport.centerY - h * .05,
-          Math.max(w, h) * .68
+          viewport.centerX - w * .22,
+          viewport.centerY - h * .2,
+          Math.max(w, h) * .66
         );
-        centerGlow.addColorStop(0, 'rgba(7, 31, 35, .42)');
-        centerGlow.addColorStop(.33, 'rgba(7, 16, 25, .25)');
-        centerGlow.addColorStop(1, '#08080c');
-        ctx.fillStyle = centerGlow;
+        cyanGlow.addColorStop(0, 'rgba(0, 240, 255, .13)');
+        cyanGlow.addColorStop(.34, 'rgba(0, 143, 190, .05)');
+        cyanGlow.addColorStop(1, 'rgba(0, 20, 44, 0)');
+        ctx.fillStyle = cyanGlow;
+        ctx.fillRect(0, 0, w, h);
+
+        const purpleGlow = ctx.createRadialGradient(
+          viewport.centerX + w * .24,
+          viewport.centerY + h * .2,
+          0,
+          viewport.centerX + w * .24,
+          viewport.centerY + h * .2,
+          Math.max(w, h) * .7
+        );
+        purpleGlow.addColorStop(0, 'rgba(189, 0, 255, .12)');
+        purpleGlow.addColorStop(.38, 'rgba(121, 40, 202, .055)');
+        purpleGlow.addColorStop(1, 'rgba(20, 0, 40, 0)');
+        ctx.fillStyle = purpleGlow;
         ctx.fillRect(0, 0, w, h);
 
         const horizon = ctx.createLinearGradient(0, h * .33, 0, h);
-        horizon.addColorStop(0, 'rgba(0, 255, 102, 0)');
-        horizon.addColorStop(.54, 'rgba(0, 255, 102, .012)');
-        horizon.addColorStop(1, 'rgba(0, 255, 102, .035)');
+        horizon.addColorStop(0, 'rgba(0, 240, 255, 0)');
+        horizon.addColorStop(.54, 'rgba(121, 40, 202, .012)');
+        horizon.addColorStop(1, 'rgba(0, 240, 255, .028)');
         ctx.fillStyle = horizon;
         ctx.fillRect(0, 0, w, h);
 
@@ -298,7 +320,7 @@
         for (const star of viewport.stars) {
           const shimmer = .74 + Math.sin(time * .00045 + star.phase) * .26;
           ctx.globalAlpha = star.alpha * shimmer;
-          ctx.fillStyle = star.radius > 1 ? '#a4fff0' : '#ffffff';
+          ctx.fillStyle = star.radius > 1 ? '#c0faff' : '#ffffff';
           ctx.beginPath();
           ctx.arc(star.x * w, star.y * h, star.radius, 0, TAU);
           ctx.fill();
@@ -308,12 +330,12 @@
         // Two nearly invisible rings give the void a little scale without
         // competing with the cube.
         ctx.save();
-        ctx.strokeStyle = 'rgba(81, 247, 209, .045)';
+        ctx.strokeStyle = 'rgba(0, 240, 255, .045)';
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.arc(viewport.centerX, viewport.centerY, Math.min(w, h) * .27, 0, TAU);
         ctx.stroke();
-        ctx.strokeStyle = 'rgba(255, 255, 255, .025)';
+        ctx.strokeStyle = 'rgba(189, 0, 255, .035)';
         ctx.beginPath();
         ctx.arc(viewport.centerX, viewport.centerY, Math.min(w, h) * .36, 0, TAU);
         ctx.stroke();
@@ -438,10 +460,14 @@
         const alpha = (options.textureAlpha ?? 1) * visibility;
 
         if (face.id === 'bottom') {
-          // A single broad > starts near the center and points toward the
-          // outer/right edge of the underside.
-          drawChevron(cube, face, [-.16, -.31], [.56, 0], [-.16, .31], options, alpha);
-          drawLocalStroke(cube, [face.map(-.04, 0), face.map(.2, 0)], SIGNAL_COLOR, Math.max(.5, cube.half * .85), options, alpha * .55);
+          // Four distinct arrows radiate from the center of the underside
+          // toward the midpoint of each edge: up, down, left, and right.
+          drawChevron(cube, face, [-.19, .14], [0, .68], [.19, .14], options, alpha);
+          drawChevron(cube, face, [-.19, -.14], [0, -.68], [.19, -.14], options, alpha);
+          drawChevron(cube, face, [.14, -.19], [.68, 0], [.14, .19], options, alpha);
+          drawChevron(cube, face, [-.14, -.19], [-.68, 0], [-.14, .19], options, alpha);
+          drawLocalStroke(cube, [face.map(-.04, 0), face.map(.04, 0)], SIGNAL_COLOR, Math.max(.5, cube.half * .85), options, alpha * .6);
+          drawLocalStroke(cube, [face.map(0, -.04), face.map(0, .04)], SIGNAL_COLOR, Math.max(.5, cube.half * .85), options, alpha * .6);
           return;
         }
 
@@ -727,30 +753,49 @@
         }
       }
 
-      function drawGlitchOverlays(time) {
-        if (!glitch.active) return;
-        const strength = glitch.intensity;
-        const w = viewport.width;
-        const h = viewport.height;
+      function drawCubeGlitchSlices(hit, time, seed, strength) {
+        if (!hit || strength <= 0) return;
+        const bounds = hit.bounds;
+        const width = bounds.right - bounds.left;
+        const height = bounds.bottom - bounds.top;
+        const pad = clamp(Math.max(width, height) * .08, 4, 15);
+        const left = bounds.left - pad;
+        const top = bounds.top - pad;
+        const sliceWidth = width + pad * 2;
+        const sliceHeight = height + pad * 2;
+
         ctx.save();
+        ctx.beginPath();
+        ctx.rect(left, top, sliceWidth, sliceHeight);
+        ctx.clip();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.shadowBlur = 10 + strength * 13;
 
-        // Sparse scanline tears.
-        const lineCount = 2 + Math.floor(strength * 4);
+        // These hard horizontal slices are clipped to the projected cube
+        // bounds, so the glitch never touches the surrounding atmosphere.
+        const lineCount = 3 + Math.floor(strength * 5);
         for (let i = 0; i < lineCount; i += 1) {
-          const y = Math.abs(Math.sin(glitch.seed * .07 + i * 18.31 + time * .002)) * h;
-          const lineHeight = 1 + Math.abs(Math.sin(i * 7.1 + glitch.seed)) * 3;
-          ctx.fillStyle = i % 2 ? `rgba(0, 255, 102, ${.045 * strength})` : `rgba(255, 255, 255, ${.055 * strength})`;
-          ctx.fillRect(0, y, w, lineHeight);
+          const y = top + (.08 + Math.abs(Math.sin(seed * .017 + i * 17.41 + time * .0027)) * .84) * sliceHeight;
+          const offset = hashNoise(seed + i * 3.71) * (8 + strength * 18);
+          const lineHeight = 1 + Math.abs(Math.sin(seed + i * 2.3)) * (1.4 + strength * 2.8);
+          const cyan = i % 2 === 0;
+          ctx.fillStyle = cyan ? `rgba(0, 240, 255, ${.22 * strength})` : `rgba(255, 43, 181, ${.22 * strength})`;
+          ctx.shadowColor = cyan ? GLITCH_CYAN : GLITCH_MAGENTA;
+          ctx.fillRect(left + offset, y, sliceWidth, lineHeight);
+
+          // A short, displaced fragment gives the slice a sharper digital
+          // read than a uniform scanline.
+          ctx.globalAlpha = .9 * strength;
+          ctx.fillRect(left + offset * 1.65, y + lineHeight + 1, width * (.16 + (i % 3) * .12), 1.2);
+          ctx.globalAlpha = 1;
         }
 
-        const bandY = Math.abs(Math.sin(glitch.seed * .013 + time * .0017)) * h;
-        ctx.fillStyle = `rgba(255, 0, 96, ${.025 * strength})`;
-        ctx.fillRect(0, bandY, w, 7 + strength * 11);
-
-        if (Math.sin(time * .045 + glitch.seed) > -.1) {
-          ctx.fillStyle = `rgba(230, 255, 249, ${.018 * strength})`;
-          ctx.fillRect(0, 0, w, h);
-        }
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = .72 * strength;
+        ctx.fillStyle = `rgba(255, 43, 181, ${.42 * strength})`;
+        ctx.fillRect(left + hashNoise(seed + 91) * 10, top + sliceHeight * .46, sliceWidth * .58, 1.5);
+        ctx.fillStyle = `rgba(0, 240, 255, ${.42 * strength})`;
+        ctx.fillRect(left + hashNoise(seed + 127) * 14, top + sliceHeight * .67, sliceWidth * .36, 1.5);
         ctx.restore();
       }
 
@@ -759,7 +804,7 @@
       // -------------------------------------------------------------------
       const master = {
         position: vec(0, 0, 0),
-        half: 1,
+        half: MASTER_HALF,
         rotation: { x: .37, y: -.55, z: .18 },
         velocity: { x: .12, y: .22, z: -.075 },
         velocityTarget: { x: .12, y: .22, z: -.075 },
@@ -790,7 +835,7 @@
           startPosition: vec(),
           targetPosition: vec(),
           position: vec(),
-          half: .5,
+          half: MINI_CLUSTER_HALF,
           rotation: cloneAngles(master.rotation),
           startRotation: cloneAngles(master.rotation),
           targetRotation: {
@@ -848,9 +893,9 @@
 
         for (const mini of app.minis) {
           const offset = vec(
-            mini.column % 2 ? .5 : -.5,
-            mini.row ? -.5 : .5,
-            Math.floor(mini.column / 2) ? .5 : -.5
+            mini.column % 2 ? MINI_CLUSTER_HALF : -MINI_CLUSTER_HALF,
+            mini.row ? -MINI_CLUSTER_HALF : MINI_CLUSTER_HALF,
+            Math.floor(mini.column / 2) ? MINI_CLUSTER_HALF : -MINI_CLUSTER_HALF
           );
           mini.startPosition = add(master.position, rotatePoint(offset, master.rotation));
           mini.position = cloneVec(mini.startPosition);
@@ -869,7 +914,7 @@
 
         for (const mini of app.minis) {
           mini.position = lerpVec(mini.startPosition, mini.targetPosition, motion);
-          mini.half = lerp(.5, .34, easeOutCubic(clamp(raw / .78, 0, 1)));
+          mini.half = lerp(MINI_CLUSTER_HALF, MINI_GRID_HALF, easeOutCubic(clamp(raw / .78, 0, 1)));
           mini.rotation = {
             x: approachAngle(mini.startRotation.x, mini.targetRotation.x, motion),
             y: approachAngle(mini.startRotation.y, mini.targetRotation.y, motion),
@@ -882,7 +927,7 @@
           app.hexOpacity = 0;
           for (const mini of app.minis) {
             mini.position = cloneVec(mini.targetPosition);
-            mini.half = .34;
+            mini.half = MINI_GRID_HALF;
           }
           modeReadout.textContent = 'GRID ONLINE';
           hintReadout.textContent = 'SELECT A DIMENSION';
@@ -999,70 +1044,139 @@
         ctx.restore();
       }
 
+      function drawTargetingBrackets(mini) {
+        if (!mini.hit) return;
+        const bounds = mini.hit.bounds;
+        const width = bounds.right - bounds.left;
+        const height = bounds.bottom - bounds.top;
+        const pad = clamp(Math.max(width, height) * .12, 7, 14);
+        const left = bounds.left - pad;
+        const right = bounds.right + pad;
+        const top = bounds.top - pad;
+        const bottom = bounds.bottom + pad;
+        const arm = clamp(Math.min(width, height) * .22, 8, 17);
+        const centerX = (left + right) / 2;
+        const centerY = (top + bottom) / 2;
+
+        ctx.save();
+        ctx.strokeStyle = SIGNAL_COLOR;
+        ctx.shadowColor = SIGNAL_COLOR;
+        ctx.shadowBlur = 12;
+        ctx.lineWidth = 1.25;
+        ctx.lineJoin = 'miter';
+        ctx.lineCap = 'square';
+
+        const bracket = (x, y, horizontal, vertical) => {
+          ctx.beginPath();
+          ctx.moveTo(x, y + vertical * arm);
+          ctx.lineTo(x, y);
+          ctx.lineTo(x + horizontal * arm, y);
+          ctx.stroke();
+        };
+
+        // Four open HUD brackets frame the cube without boxing it in.
+        bracket(left, top, 1, 1);
+        bracket(right, top, -1, 1);
+        bracket(left, bottom, 1, -1);
+        bracket(right, bottom, -1, -1);
+
+        // Small midpoint ticks and a centered lock-on reticle add the
+        // targeting readout while keeping the cube's wireframe visible.
+        ctx.globalAlpha = .58;
+        ctx.lineWidth = .8;
+        ctx.beginPath();
+        ctx.moveTo(centerX - 3, top - 4);
+        ctx.lineTo(centerX + 3, top - 4);
+        ctx.moveTo(centerX - 3, bottom + 4);
+        ctx.lineTo(centerX + 3, bottom + 4);
+        ctx.moveTo(left - 4, centerY - 3);
+        ctx.lineTo(left - 4, centerY + 3);
+        ctx.moveTo(right + 4, centerY - 3);
+        ctx.lineTo(right + 4, centerY + 3);
+        ctx.moveTo(centerX - 4, centerY);
+        ctx.lineTo(centerX + 4, centerY);
+        ctx.moveTo(centerX, centerY - 4);
+        ctx.lineTo(centerX, centerY + 4);
+        ctx.stroke();
+        ctx.globalAlpha = .9;
+        ctx.fillStyle = SIGNAL_COLOR;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, 1.45, 0, TAU);
+        ctx.fill();
+        ctx.restore();
+      }
+
       // -------------------------------------------------------------------
       // Frame rendering
       // -------------------------------------------------------------------
-      function renderMaster() {
+      function renderMaster(time) {
         const glitchActive = glitch.active;
         if (glitchActive) {
-          // Offset color passes create a restrained chromatic split around the
-          // main wireframe; the final white pass remains the visual anchor.
+          // High-contrast cyan/magenta passes create a localized chromatic
+          // split around the wireframe; the final white pass remains the
+          // visual anchor.
           renderCube(master, {
             wireOnly: true,
-            edgeColor: 'rgba(255, 25, 107, .48)',
-            edgeAlpha: .65 * glitch.intensity,
-            offsetX: -4.2 * glitch.intensity,
-            jitter: 1.5 * glitch.intensity,
+            edgeColor: GLITCH_MAGENTA,
+            edgeAlpha: .92 * glitch.intensity,
+            offsetX: -7.5 * glitch.intensity,
+            offsetY: 1.2 * glitch.intensity,
+            jitter: 4.6 * glitch.intensity,
             seed: glitch.seed + 8
           });
           renderCube(master, {
             wireOnly: true,
-            edgeColor: 'rgba(0, 222, 255, .52)',
-            edgeAlpha: .72 * glitch.intensity,
-            offsetX: 4.2 * glitch.intensity,
-            jitter: 1.3 * glitch.intensity,
+            edgeColor: GLITCH_CYAN,
+            edgeAlpha: .96 * glitch.intensity,
+            offsetX: 7.5 * glitch.intensity,
+            offsetY: -1.2 * glitch.intensity,
+            jitter: 4.3 * glitch.intensity,
             seed: glitch.seed + 29
           });
         }
         master.hit = renderCube(master, {
-          jitter: glitchActive ? 2.2 * glitch.intensity : 0,
+          jitter: glitchActive ? 3.6 * glitch.intensity : 0,
           seed: glitch.seed,
-          edgeAlpha: glitchActive ? .88 : 1
+          edgeAlpha: glitchActive ? .96 : 1
         });
+        if (glitchActive) drawCubeGlitchSlices(master.hit, time, glitch.seed + 44, glitch.intensity);
       }
 
-      function renderMini(mini) {
+      function renderMini(mini, time) {
         const hovered = mini.hovered;
         const glitchActive = glitch.active;
         const renderTarget = hovered ? { ...mini, half: mini.half * 1.09 } : mini;
         if (glitchActive) {
           renderCube(renderTarget, {
             wireOnly: true,
-            edgeColor: 'rgba(255, 24, 112, .32)',
-            edgeAlpha: .44 * glitch.intensity,
-            offsetX: -2.8 * glitch.intensity,
-            jitter: .85 * glitch.intensity,
+            edgeColor: GLITCH_MAGENTA,
+            edgeAlpha: .84 * glitch.intensity,
+            offsetX: -4.5 * glitch.intensity,
+            offsetY: .8 * glitch.intensity,
+            jitter: 3.1 * glitch.intensity,
             seed: glitch.seed + mini.index * 9
+          });
+          renderCube(renderTarget, {
+            wireOnly: true,
+            edgeColor: GLITCH_CYAN,
+            edgeAlpha: .88 * glitch.intensity,
+            offsetX: 4.5 * glitch.intensity,
+            offsetY: -.8 * glitch.intensity,
+            jitter: 2.9 * glitch.intensity,
+            seed: glitch.seed + mini.index * 11 + 29
           });
         }
         mini.hit = renderCube(renderTarget, {
-          jitter: glitchActive ? 1.05 * glitch.intensity : 0,
+          jitter: glitchActive ? 2.3 * glitch.intensity : 0,
           seed: glitch.seed + mini.index,
           edgeAlpha: hovered ? 1.35 : .92,
           edgeColor: hovered ? '#ffffff' : EDGE_COLOR,
           fillAlpha: hovered ? 1.16 : .88,
           textureAlpha: hovered ? 1.18 : .82
         });
+        if (glitchActive) drawCubeGlitchSlices(mini.hit, time, glitch.seed + mini.index * 97, glitch.intensity);
         if (hovered) {
-          const bounds = mini.hit.bounds;
-          ctx.save();
-          ctx.globalAlpha = .13;
-          ctx.strokeStyle = SIGNAL_COLOR;
-          ctx.shadowColor = SIGNAL_COLOR;
-          ctx.shadowBlur = 18;
-          ctx.lineWidth = 1;
-          ctx.strokeRect(bounds.left - 5, bounds.top - 5, bounds.right - bounds.left + 10, bounds.bottom - bounds.top + 10);
-          ctx.restore();
+          drawTargetingBrackets(mini);
         }
       }
 
@@ -1072,7 +1186,7 @@
 
         if (app.state === 'idle') {
           drawHexagons(time, app.hexOpacity);
-          renderMaster();
+          renderMaster(time);
         } else {
           if (app.state === 'transition') updateTransition(time);
           if (app.hexOpacity > .001) drawHexagons(time, app.hexOpacity);
@@ -1080,14 +1194,13 @@
           // During the transition the eight cubes are part of one moving
           // composition. At the destination, render and label them in grid
           // order so depth overlap never hides the intended navigation order.
-          for (const mini of app.minis) renderMini(mini);
+          for (const mini of app.minis) renderMini(mini, time);
           if (app.state === 'grid') {
             for (const mini of app.minis) drawCubeLabel(mini);
           }
         }
 
         if (app.state === 'idle' || app.state === 'grid') updateHover();
-        drawGlitchOverlays(time);
       }
 
       function frame(time) {
