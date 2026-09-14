@@ -1,0 +1,1160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#08080c">
+  <title>cubus.sh — dimensional interface</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --void: #08080c;
+      --signal: #00ff66;
+      --signal-dim: rgba(0, 255, 102, .58);
+      --ice: #efffff;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--void);
+    }
+
+    body {
+      position: relative;
+      color: var(--ice);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #scene {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      outline: none;
+      touch-action: none;
+      cursor: default;
+    }
+
+    .terminal-header {
+      position: fixed;
+      z-index: 2;
+      top: max(18px, env(safe-area-inset-top));
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 8px 13px 9px;
+      color: rgba(0, 255, 102, .82);
+      background: rgba(8, 8, 12, .48);
+      border: 1px solid rgba(0, 255, 102, .11);
+      box-shadow: 0 0 18px rgba(0, 255, 102, .045);
+      font-size: clamp(11px, 1.2vw, 13px);
+      line-height: 1;
+      letter-spacing: .16em;
+      white-space: nowrap;
+      user-select: none;
+      pointer-events: none;
+    }
+
+    .terminal-header .prompt {
+      color: var(--signal);
+      text-shadow: 0 0 8px rgba(0, 255, 102, .7);
+    }
+
+    .hud {
+      position: fixed;
+      z-index: 2;
+      right: max(20px, env(safe-area-inset-right));
+      bottom: max(19px, env(safe-area-inset-bottom));
+      color: rgba(222, 255, 243, .38);
+      font-size: 9px;
+      line-height: 1.55;
+      letter-spacing: .15em;
+      text-align: right;
+      text-transform: uppercase;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    .hud .accent { color: rgba(0, 255, 102, .66); }
+
+    .corner-mark {
+      position: fixed;
+      z-index: 2;
+      left: max(20px, env(safe-area-inset-left));
+      bottom: max(19px, env(safe-area-inset-bottom));
+      color: rgba(255, 255, 255, .2);
+      font-size: 9px;
+      letter-spacing: .14em;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    @media (max-width: 560px) {
+      .terminal-header { letter-spacing: .1em; }
+      .hud,
+      .corner-mark { font-size: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="scene" tabindex="0" aria-label="Interactive three-dimensional cubus navigation"></canvas>
+  <div class="terminal-header"><span class="prompt">$</span> ./cubus.sh</div>
+  <div class="corner-mark">SYS / DIMENSIONAL-01</div>
+  <div class="hud"><span class="accent" id="mode">CORE ONLINE</span><br><span id="hint">CLICK THE CUBE TO SPLIT</span></div>
+
+  <script>
+    (() => {
+      'use strict';
+
+      // -------------------------------------------------------------------
+      // Constants and small utilities
+      // -------------------------------------------------------------------
+      const canvas = document.getElementById('scene');
+      const ctx = canvas.getContext('2d', { alpha: false });
+      const modeReadout = document.getElementById('mode');
+      const hintReadout = document.getElementById('hint');
+
+      const TAU = Math.PI * 2;
+      const CAMERA_Z = 7.8;
+      const CAMERA_FOCAL = 6.7;
+      const EDGE_COLOR = '#f4ffff';
+      const VECTOR_COLOR = '#51f7d1';
+      const SIGNAL_COLOR = '#00ff66';
+      const FACE_COLOR = '#07121a';
+      const FONT_STACK = '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace';
+
+      const navItems = [
+        { label: 'ABOUT',    href: '#about' },
+        { label: 'PROJECTS', href: '#projects' },
+        { label: 'LAB',      href: '#lab' },
+        { label: 'LOGS',     href: '#logs' },
+        { label: 'CLI',      href: '#cli' },
+        { label: 'STACK',    href: '#stack' },
+        { label: 'SOURCE',   href: '#source' },
+        { label: 'CONTACT',  href: '#contact' }
+      ];
+
+      const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+      const lerp = (a, b, t) => a + (b - a) * t;
+      const easeInOutCubic = (t) => {
+        t = clamp(t, 0, 1);
+        return t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+      };
+      const easeOutCubic = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
+      const randomBetween = (min, max) => min + Math.random() * (max - min);
+      const wrapAngle = (angle) => {
+        while (angle > Math.PI) angle -= TAU;
+        while (angle < -Math.PI) angle += TAU;
+        return angle;
+      };
+
+      const vec = (x = 0, y = 0, z = 0) => ({ x, y, z });
+      const add = (a, b) => vec(a.x + b.x, a.y + b.y, a.z + b.z);
+      const scaleVec = (a, scalar) => vec(a.x * scalar, a.y * scalar, a.z * scalar);
+      const lerpVec = (a, b, t) => vec(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t));
+      const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+      const cross = (a, b) => vec(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+      );
+      const length = (a) => Math.sqrt(dot(a, a));
+      const normalize = (a) => {
+        const len = length(a) || 1;
+        return scaleVec(a, 1 / len);
+      };
+      const cloneVec = (a) => vec(a.x, a.y, a.z);
+      const cloneAngles = (a) => ({ x: a.x, y: a.y, z: a.z });
+      const approachAngle = (from, to, amount) => from + wrapAngle(to - from) * amount;
+
+      // Euler rotation in Z -> Y -> X application order. Keeping the order
+      // explicit makes the projection readable and avoids any library magic.
+      function rotatePoint(point, rotation) {
+        let { x, y, z } = point;
+
+        const cosZ = Math.cos(rotation.z);
+        const sinZ = Math.sin(rotation.z);
+        [x, y] = [x * cosZ - y * sinZ, x * sinZ + y * cosZ];
+
+        const cosY = Math.cos(rotation.y);
+        const sinY = Math.sin(rotation.y);
+        [x, z] = [x * cosY + z * sinY, -x * sinY + z * cosY];
+
+        const cosX = Math.cos(rotation.x);
+        const sinX = Math.sin(rotation.x);
+        [y, z] = [y * cosX - z * sinX, y * sinX + z * cosX];
+
+        return vec(x, y, z);
+      }
+
+      function rotateNormal(normal, rotation) {
+        return normalize(rotatePoint(normal, rotation));
+      }
+
+      // A stable hash is useful for glitch jitter. It avoids a noisy flicker
+      // caused by a new random number every time a face is projected.
+      function hashNoise(seed) {
+        const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+        return (value - Math.floor(value)) * 2 - 1;
+      }
+
+      // -------------------------------------------------------------------
+      // Responsive canvas and background field
+      // -------------------------------------------------------------------
+      const viewport = {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        dpr: Math.min(window.devicePixelRatio || 1, 2),
+        centerX: window.innerWidth / 2,
+        centerY: window.innerHeight / 2,
+        scale: Math.min(window.innerWidth, window.innerHeight) * .30,
+        stars: []
+      };
+
+      function rebuildStars() {
+        viewport.stars = [];
+        let seed = 911;
+        const count = Math.round(clamp(viewport.width * viewport.height / 16500, 36, 100));
+        for (let i = 0; i < count; i += 1) {
+          seed = (seed * 9301 + 49297) % 233280;
+          const x = seed / 233280;
+          seed = (seed * 9301 + 49297) % 233280;
+          const y = seed / 233280;
+          seed = (seed * 9301 + 49297) % 233280;
+          const radius = .25 + (seed / 233280) * 1.1;
+          seed = (seed * 9301 + 49297) % 233280;
+          const alpha = .12 + (seed / 233280) * .34;
+          seed = (seed * 9301 + 49297) % 233280;
+          const phase = (seed / 233280) * TAU;
+          viewport.stars.push({ x, y, radius, alpha, phase });
+        }
+      }
+
+      function resizeCanvas() {
+        viewport.width = window.innerWidth;
+        viewport.height = window.innerHeight;
+        viewport.dpr = Math.min(window.devicePixelRatio || 1, 2);
+        viewport.centerX = viewport.width / 2;
+        viewport.centerY = viewport.height / 2;
+        viewport.scale = Math.min(viewport.width, viewport.height) * .30;
+        canvas.width = Math.round(viewport.width * viewport.dpr);
+        canvas.height = Math.round(viewport.height * viewport.dpr);
+        canvas.style.width = `${viewport.width}px`;
+        canvas.style.height = `${viewport.height}px`;
+        ctx.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
+        rebuildStars();
+        if (app.state === 'grid' || app.state === 'transition') {
+          updateGridTargets();
+        }
+      }
+
+      function worldToScreen(point) {
+        const depth = Math.max(.8, CAMERA_Z - point.z);
+        const perspective = CAMERA_FOCAL / depth;
+        return {
+          x: viewport.centerX + point.x * viewport.scale * perspective,
+          y: viewport.centerY - point.y * viewport.scale * perspective,
+          depth
+        };
+      }
+
+      function screenToWorld(x, y, z = 0) {
+        const depth = Math.max(.8, CAMERA_Z - z);
+        const perspective = CAMERA_FOCAL / depth;
+        const unit = viewport.scale * perspective;
+        return vec((x - viewport.centerX) / unit, -(y - viewport.centerY) / unit, z);
+      }
+
+      function drawBackground(time) {
+        const w = viewport.width;
+        const h = viewport.height;
+        const centerGlow = ctx.createRadialGradient(
+          viewport.centerX,
+          viewport.centerY - h * .05,
+          0,
+          viewport.centerX,
+          viewport.centerY - h * .05,
+          Math.max(w, h) * .68
+        );
+        centerGlow.addColorStop(0, 'rgba(7, 31, 35, .42)');
+        centerGlow.addColorStop(.33, 'rgba(7, 16, 25, .25)');
+        centerGlow.addColorStop(1, '#08080c');
+        ctx.fillStyle = centerGlow;
+        ctx.fillRect(0, 0, w, h);
+
+        const horizon = ctx.createLinearGradient(0, h * .33, 0, h);
+        horizon.addColorStop(0, 'rgba(0, 255, 102, 0)');
+        horizon.addColorStop(.54, 'rgba(0, 255, 102, .012)');
+        horizon.addColorStop(1, 'rgba(0, 255, 102, .035)');
+        ctx.fillStyle = horizon;
+        ctx.fillRect(0, 0, w, h);
+
+        ctx.save();
+        for (const star of viewport.stars) {
+          const shimmer = .74 + Math.sin(time * .00045 + star.phase) * .26;
+          ctx.globalAlpha = star.alpha * shimmer;
+          ctx.fillStyle = star.radius > 1 ? '#a4fff0' : '#ffffff';
+          ctx.beginPath();
+          ctx.arc(star.x * w, star.y * h, star.radius, 0, TAU);
+          ctx.fill();
+        }
+        ctx.restore();
+
+        // Two nearly invisible rings give the void a little scale without
+        // competing with the cube.
+        ctx.save();
+        ctx.strokeStyle = 'rgba(81, 247, 209, .045)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(viewport.centerX, viewport.centerY, Math.min(w, h) * .27, 0, TAU);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(255, 255, 255, .025)';
+        ctx.beginPath();
+        ctx.arc(viewport.centerX, viewport.centerY, Math.min(w, h) * .36, 0, TAU);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // -------------------------------------------------------------------
+      // Cube geometry, face mapping, and vector textures
+      // -------------------------------------------------------------------
+      const cubeVertices = [
+        vec(-1, -1, -1), vec(1, -1, -1), vec(1, 1, -1), vec(-1, 1, -1),
+        vec(-1, -1, 1),  vec(1, -1, 1),  vec(1, 1, 1),  vec(-1, 1, 1)
+      ];
+
+      const cubeEdges = [
+        [0, 1], [1, 2], [2, 3], [3, 0],
+        [4, 5], [5, 6], [6, 7], [7, 4],
+        [0, 4], [1, 5], [2, 6], [3, 7]
+      ];
+
+      const faceDefs = [
+        {
+          id: 'bottom',
+          normal: vec(0, -1, 0),
+          map: (u, v) => vec(u, -1, v),
+          vertices: [0, 1, 5, 4]
+        },
+        {
+          id: 'top',
+          normal: vec(0, 1, 0),
+          map: (u, v) => vec(u, 1, v),
+          vertices: [3, 7, 6, 2]
+        },
+        {
+          id: 'front',
+          normal: vec(0, 0, 1),
+          map: (u, v) => vec(u, v, 1),
+          vertices: [4, 5, 6, 7]
+        },
+        {
+          id: 'back',
+          normal: vec(0, 0, -1),
+          map: (u, v) => vec(-u, v, -1),
+          vertices: [1, 0, 3, 2]
+        },
+        {
+          id: 'right',
+          normal: vec(1, 0, 0),
+          map: (u, v) => vec(1, v, -u),
+          vertices: [1, 5, 6, 2]
+        },
+        {
+          id: 'left',
+          normal: vec(-1, 0, 0),
+          map: (u, v) => vec(-1, v, u),
+          vertices: [0, 3, 7, 4]
+        }
+      ];
+
+      function transformedVertices(cube) {
+        return cubeVertices.map((vertex) => {
+          const local = scaleVec(vertex, cube.half);
+          return add(cube.position, rotatePoint(local, cube.rotation));
+        });
+      }
+
+      function faceCenter(cube, face) {
+        return add(cube.position, rotatePoint(scaleVec(face.normal, cube.half), cube.rotation));
+      }
+
+      function faceNormal(cube, face) {
+        return rotateNormal(face.normal, cube.rotation);
+      }
+
+      function makeProjectedPoint(cube, localPoint, key, options) {
+        const world = add(cube.position, rotatePoint(scaleVec(localPoint, cube.half), cube.rotation));
+        const projected = worldToScreen(world);
+        const jitter = options.jitter || 0;
+        if (jitter) {
+          projected.x += hashNoise(options.seed + key * 13.17) * jitter;
+          projected.y += hashNoise(options.seed + key * 4.71 + 31) * jitter;
+        }
+        projected.x += options.offsetX || 0;
+        projected.y += options.offsetY || 0;
+        projected.world = world;
+        return projected;
+      }
+
+      function strokeProjectedPath(points, color, width, alpha = 1) {
+        if (!points.length) return;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawLocalStroke(cube, points, color, width, options, alpha = 1) {
+        const projected = points.map((point, index) => {
+          const local = Array.isArray(point)
+            ? vec(point[0], point[1], point[2] || 0)
+            : point;
+          return makeProjectedPoint(cube, local, 400 + index * 17, options);
+        });
+        strokeProjectedPath(projected, color, width, alpha);
+      }
+
+      function drawChevron(cube, face, a, tip, b, options, alpha) {
+        const mapPoint = ([u, v]) => face.map(u, v);
+        drawLocalStroke(cube, [mapPoint(a), mapPoint(tip)], VECTOR_COLOR, Math.max(.72, cube.half * 2.15), options, alpha);
+        drawLocalStroke(cube, [mapPoint(tip), mapPoint(b)], VECTOR_COLOR, Math.max(.72, cube.half * 2.15), options, alpha);
+      }
+
+      function drawFaceTexture(cube, face, options, facing) {
+        const visibility = clamp(.38 + facing * .62, .12, 1);
+        const alpha = (options.textureAlpha ?? 1) * visibility;
+
+        if (face.id === 'bottom') {
+          // A single broad > starts near the center and points toward the
+          // outer/right edge of the underside.
+          drawChevron(cube, face, [-.16, -.31], [.56, 0], [-.16, .31], options, alpha);
+          drawLocalStroke(cube, [face.map(-.04, 0), face.map(.2, 0)], SIGNAL_COLOR, Math.max(.5, cube.half * .85), options, alpha * .55);
+          return;
+        }
+
+        if (face.id === 'top') {
+          // Four chevrons sit at the edges and point inward to the center.
+          drawChevron(cube, face, [-.20, .64], [0, .18], [.20, .64], options, alpha);
+          drawChevron(cube, face, [-.20, -.64], [0, -.18], [.20, -.64], options, alpha);
+          drawChevron(cube, face, [-.64, -.20], [-.18, 0], [-.64, .20], options, alpha);
+          drawChevron(cube, face, [.64, -.20], [.18, 0], [.64, .20], options, alpha);
+          return;
+        }
+
+        // Every vertical face carries a small stack of upward-pointing
+        // chevrons. UV space keeps this exact across all four orientations.
+        for (let row = 0; row < 3; row += 1) {
+          const v = -.55 + row * .55;
+          drawChevron(cube, face, [-.28, v - .13], [0, v + .13], [.28, v - .13], options, alpha);
+        }
+      }
+
+      function renderCube(cube, options = {}) {
+        const settings = {
+          seed: 0,
+          jitter: 0,
+          offsetX: 0,
+          offsetY: 0,
+          wireOnly: false,
+          textureAlpha: 1,
+          edgeColor: EDGE_COLOR,
+          edgeAlpha: 1,
+          fillAlpha: 1,
+          ...options
+        };
+
+        const worldVertices = transformedVertices(cube);
+        const projectedVertices = worldVertices.map((world, index) => {
+          const projected = worldToScreen(world);
+          if (settings.jitter) {
+            projected.x += hashNoise(settings.seed + index * 13.17) * settings.jitter;
+            projected.y += hashNoise(settings.seed + index * 4.71 + 31) * settings.jitter;
+          }
+          projected.x += settings.offsetX;
+          projected.y += settings.offsetY;
+          projected.world = world;
+          return projected;
+        });
+
+        const cameraPosition = vec(0, 0, CAMERA_Z);
+        const projectedFaces = faceDefs.map((face, faceIndex) => {
+          const center = faceCenter(cube, face);
+          const normal = faceNormal(cube, face);
+          const toCamera = normalize(add(cameraPosition, scaleVec(center, -1)));
+          const facing = dot(normal, toCamera);
+          const points = face.vertices.map((index) => projectedVertices[index]);
+          return {
+            face,
+            faceIndex,
+            points,
+            center,
+            facing,
+            depth: points.reduce((sum, point) => sum + point.world.z, 0) / points.length
+          };
+        });
+
+        // Painter's algorithm: far faces first, then close faces over them.
+        projectedFaces.sort((a, b) => a.depth - b.depth);
+
+        if (!settings.wireOnly) {
+          for (const item of projectedFaces) {
+            const faceAlpha = settings.fillAlpha * clamp(.13 + Math.max(0, item.facing) * .22, .10, .36);
+            ctx.save();
+            ctx.globalAlpha = faceAlpha;
+            ctx.fillStyle = FACE_COLOR;
+            ctx.beginPath();
+            ctx.moveTo(item.points[0].x, item.points[0].y);
+            for (let i = 1; i < item.points.length; i += 1) ctx.lineTo(item.points[i].x, item.points[i].y);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+          }
+
+          for (const item of projectedFaces) {
+            const localAlpha = settings.textureAlpha * clamp(.24 + Math.max(0, item.facing) * .76, .2, 1);
+            drawFaceTexture(cube, item.face, settings, item.facing);
+            // The faint face border reinforces the planar texture without
+            // replacing the crisp cube edge pass below.
+            strokeProjectedPath(item.points.concat([item.points[0]]), VECTOR_COLOR, Math.max(.45, cube.half * .48), localAlpha * .28);
+          }
+        }
+
+        // Draw all twelve edges in one pass so the silhouette remains clean.
+        ctx.save();
+        ctx.globalAlpha = settings.edgeAlpha;
+        ctx.strokeStyle = settings.edgeColor;
+        ctx.lineWidth = Math.max(.8, cube.half * 1.35);
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.shadowColor = settings.edgeColor;
+        ctx.shadowBlur = settings.edgeColor === EDGE_COLOR ? Math.max(5, cube.half * 5.2) : Math.max(3, cube.half * 3);
+        for (const [from, to] of cubeEdges) {
+          ctx.beginPath();
+          ctx.moveTo(projectedVertices[from].x, projectedVertices[from].y);
+          ctx.lineTo(projectedVertices[to].x, projectedVertices[to].y);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        return {
+          vertices: projectedVertices,
+          faces: projectedFaces,
+          bounds: getBounds(projectedVertices)
+        };
+      }
+
+      function getBounds(points) {
+        const xs = points.map((point) => point.x);
+        const ys = points.map((point) => point.y);
+        return {
+          left: Math.min(...xs),
+          right: Math.max(...xs),
+          top: Math.min(...ys),
+          bottom: Math.max(...ys)
+        };
+      }
+
+      // -------------------------------------------------------------------
+      // Orbiting hexagons
+      // -------------------------------------------------------------------
+      const hexagons = Array.from({ length: 12 }, (_, index) => ({
+        index,
+        orbit: randomBetween(0, TAU),
+        radius: randomBetween(1.65, 2.55),
+        height: randomBetween(-1.35, 1.35),
+        tilt: randomBetween(-.65, .65),
+        size: randomBetween(4.5, 9.5),
+        speed: randomBetween(.045, .095) * (index % 2 ? -1 : 1),
+        spin: randomBetween(-.45, .45),
+        phase: randomBetween(0, TAU),
+        opacity: randomBetween(.55, 1)
+      }));
+
+      function hexWorldPosition(hex, time) {
+        const orbit = hex.orbit + time * .00012 * hex.speed * 12;
+        const vertical = hex.height + Math.sin(time * .00055 + hex.phase) * .16;
+        return vec(
+          Math.cos(orbit) * hex.radius,
+          vertical,
+          Math.sin(orbit) * hex.radius * .68
+        );
+      }
+
+      function drawHexagons(time, opacity) {
+        if (opacity <= .001) return;
+        ctx.save();
+        for (const hex of hexagons) {
+          const world = hexWorldPosition(hex, time);
+          const center = worldToScreen(world);
+          const depthScale = CAMERA_FOCAL / Math.max(.8, CAMERA_Z - world.z);
+          const radius = hex.size * depthScale * (viewport.scale / 240);
+          const rotation = hex.phase + time * .0004 * hex.spin;
+          const points = [];
+          for (let i = 0; i < 6; i += 1) {
+            const angle = rotation + i * TAU / 6;
+            points.push({
+              x: center.x + Math.cos(angle) * radius,
+              y: center.y + Math.sin(angle) * radius
+            });
+          }
+          const green = `rgba(0, 255, 102, ${opacity * hex.opacity})`;
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = green;
+          ctx.lineWidth = Math.max(.65, radius * .095);
+          ctx.lineJoin = 'round';
+          ctx.shadowColor = SIGNAL_COLOR;
+          ctx.shadowBlur = Math.max(4, radius * .9);
+          ctx.beginPath();
+          ctx.moveTo(points[0].x, points[0].y);
+          for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
+          ctx.closePath();
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // -------------------------------------------------------------------
+      // Glitch scheduler and procedural Web Audio
+      // -------------------------------------------------------------------
+      const glitch = {
+        active: false,
+        startedAt: 0,
+        duration: 0,
+        seed: 0,
+        nextAt: randomBetween(4000, 8000),
+        intensity: 0
+      };
+
+      let audioContext = null;
+
+      function ensureAudio() {
+        if (!audioContext) {
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          if (!AudioContextClass) return null;
+          audioContext = new AudioContextClass();
+        }
+        if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+        return audioContext;
+      }
+
+      function playGlitchBurst(strength = 1) {
+        const audio = ensureAudio();
+        if (!audio) return;
+        const duration = randomBetween(.10, .19);
+        const sampleCount = Math.max(1, Math.floor(audio.sampleRate * duration));
+        const buffer = audio.createBuffer(1, sampleCount, audio.sampleRate);
+        const data = buffer.getChannelData(0);
+        let last = 0;
+        for (let i = 0; i < sampleCount; i += 1) {
+          const bitNoise = Math.random() > .5 ? 1 : -1;
+          const white = Math.random() * 2 - 1;
+          last = last * .56 + (white * .76 + bitNoise * .24) * .44;
+          data[i] = last * (1 - i / sampleCount) * (Math.random() > .82 ? 1.8 : 1);
+        }
+
+        const source = audio.createBufferSource();
+        const bandpass = audio.createBiquadFilter();
+        const gain = audio.createGain();
+        source.buffer = buffer;
+        bandpass.type = 'bandpass';
+        bandpass.frequency.setValueAtTime(randomBetween(850, 2600), audio.currentTime);
+        bandpass.frequency.exponentialRampToValueAtTime(randomBetween(2400, 6800), audio.currentTime + duration * .45);
+        bandpass.Q.setValueAtTime(randomBetween(.65, 1.8), audio.currentTime);
+        const now = audio.currentTime;
+        gain.gain.setValueAtTime(.0001, now);
+        gain.gain.exponentialRampToValueAtTime(.17 * strength, now + .008);
+        gain.gain.exponentialRampToValueAtTime(.0001, now + duration);
+        source.connect(bandpass).connect(gain).connect(audio.destination);
+        source.start(now);
+        source.stop(now + duration + .02);
+      }
+
+      function playClickPop() {
+        const audio = ensureAudio();
+        if (!audio) return;
+        const now = audio.currentTime;
+        const oscillator = audio.createOscillator();
+        const filter = audio.createBiquadFilter();
+        const gain = audio.createGain();
+        oscillator.type = 'square';
+        oscillator.frequency.setValueAtTime(180, now);
+        oscillator.frequency.exponentialRampToValueAtTime(62, now + .075);
+        filter.type = 'highpass';
+        filter.frequency.setValueAtTime(700, now);
+        gain.gain.setValueAtTime(.0001, now);
+        gain.gain.exponentialRampToValueAtTime(.22, now + .004);
+        gain.gain.exponentialRampToValueAtTime(.0001, now + .085);
+        oscillator.connect(filter).connect(gain).connect(audio.destination);
+        oscillator.start(now);
+        oscillator.stop(now + .1);
+        playGlitchBurst(.65);
+      }
+
+      function startGlitch(time, sound = true) {
+        glitch.active = true;
+        glitch.startedAt = time;
+        glitch.duration = randomBetween(100, 200);
+        glitch.seed = Math.random() * 10000;
+        glitch.intensity = randomBetween(.72, 1.18);
+        glitch.nextAt = time + randomBetween(4000, 8000);
+        if (sound) playGlitchBurst(glitch.intensity);
+      }
+
+      function updateGlitch(time) {
+        if (!glitch.active && time >= glitch.nextAt) startGlitch(time, Boolean(audioContext));
+        if (glitch.active) {
+          const elapsed = time - glitch.startedAt;
+          if (elapsed >= glitch.duration) {
+            glitch.active = false;
+            glitch.intensity = 0;
+          } else {
+            const envelope = Math.sin(Math.PI * elapsed / glitch.duration);
+            glitch.intensity = Math.max(.1, envelope);
+          }
+        }
+      }
+
+      function drawGlitchOverlays(time) {
+        if (!glitch.active) return;
+        const strength = glitch.intensity;
+        const w = viewport.width;
+        const h = viewport.height;
+        ctx.save();
+
+        // Sparse scanline tears.
+        const lineCount = 2 + Math.floor(strength * 4);
+        for (let i = 0; i < lineCount; i += 1) {
+          const y = Math.abs(Math.sin(glitch.seed * .07 + i * 18.31 + time * .002)) * h;
+          const lineHeight = 1 + Math.abs(Math.sin(i * 7.1 + glitch.seed)) * 3;
+          ctx.fillStyle = i % 2 ? `rgba(0, 255, 102, ${.045 * strength})` : `rgba(255, 255, 255, ${.055 * strength})`;
+          ctx.fillRect(0, y, w, lineHeight);
+        }
+
+        const bandY = Math.abs(Math.sin(glitch.seed * .013 + time * .0017)) * h;
+        ctx.fillStyle = `rgba(255, 0, 96, ${.025 * strength})`;
+        ctx.fillRect(0, bandY, w, 7 + strength * 11);
+
+        if (Math.sin(time * .045 + glitch.seed) > -.1) {
+          ctx.fillStyle = `rgba(230, 255, 249, ${.018 * strength})`;
+          ctx.fillRect(0, 0, w, h);
+        }
+        ctx.restore();
+      }
+
+      // -------------------------------------------------------------------
+      // Application state and transition targets
+      // -------------------------------------------------------------------
+      const master = {
+        position: vec(0, 0, 0),
+        half: 1,
+        rotation: { x: .37, y: -.55, z: .18 },
+        velocity: { x: .12, y: .22, z: -.075 },
+        velocityTarget: { x: .12, y: .22, z: -.075 },
+        driftAt: randomBetween(3000, 5000),
+        hit: null
+      };
+
+      const app = {
+        state: 'idle',
+        transitionStartedAt: 0,
+        transitionDuration: 1720,
+        hexOpacity: 1,
+        hoveredIndex: -1,
+        pointer: { x: -9999, y: -9999 },
+        minis: [],
+        lastTime: performance.now(),
+        frame: 0
+      };
+
+      function makeMiniCube(index, column, row, depth) {
+        return {
+          index,
+          column,
+          row,
+          depth,
+          label: navItems[index].label,
+          href: navItems[index].href,
+          startPosition: vec(),
+          targetPosition: vec(),
+          position: vec(),
+          half: .5,
+          rotation: cloneAngles(master.rotation),
+          startRotation: cloneAngles(master.rotation),
+          targetRotation: {
+            x: master.rotation.x + randomBetween(-.26, .26),
+            y: master.rotation.y + randomBetween(-.42, .42),
+            z: master.rotation.z + randomBetween(-.2, .2)
+          },
+          velocity: {
+            x: randomBetween(-.055, .055),
+            y: randomBetween(-.07, .07),
+            z: randomBetween(-.045, .045)
+          },
+          wobble: randomBetween(0, TAU),
+          hit: null,
+          hovered: false
+        };
+      }
+
+      function buildMinis() {
+        app.minis = [];
+        let index = 0;
+        for (let row = 0; row < 2; row += 1) {
+          for (let column = 0; column < 4; column += 1) {
+            app.minis.push(makeMiniCube(index, column, row, index % 2 ? -.03 : .03));
+            index += 1;
+          }
+        }
+      }
+
+      function gridScreenAnchor(column, row) {
+        const x = viewport.width * ((column + .5) / 4);
+        const top = clamp(viewport.height * .335, 150, 260);
+        const bottom = clamp(viewport.height * .685, 365, viewport.height - 120);
+        const y = row === 0 ? top : Math.max(top + 112, bottom);
+        return { x, y };
+      }
+
+      function updateGridTargets() {
+        for (const mini of app.minis) {
+          const anchor = gridScreenAnchor(mini.column, mini.row);
+          mini.targetPosition = screenToWorld(anchor.x, anchor.y, mini.depth);
+        }
+      }
+
+      function beginSplit(time) {
+        if (app.state !== 'idle') return;
+        ensureAudio();
+        playClickPop();
+        app.state = 'transition';
+        app.transitionStartedAt = time;
+        app.hexOpacity = 1;
+        app.hoveredIndex = -1;
+        master.hit = null;
+        buildMinis();
+
+        for (const mini of app.minis) {
+          const offset = vec(
+            mini.column % 2 ? .5 : -.5,
+            mini.row ? -.5 : .5,
+            Math.floor(mini.column / 2) ? .5 : -.5
+          );
+          mini.startPosition = add(master.position, rotatePoint(offset, master.rotation));
+          mini.position = cloneVec(mini.startPosition);
+          mini.startRotation = cloneAngles(master.rotation);
+          mini.rotation = cloneAngles(master.rotation);
+        }
+        updateGridTargets();
+        modeReadout.textContent = 'SPLIT SEQUENCE';
+        hintReadout.textContent = 'DIMENSIONS UNLOCKING';
+      }
+
+      function updateTransition(time) {
+        const raw = clamp((time - app.transitionStartedAt) / app.transitionDuration, 0, 1);
+        const motion = easeInOutCubic(raw);
+        app.hexOpacity = 1 - easeOutCubic(clamp(raw / .42, 0, 1));
+
+        for (const mini of app.minis) {
+          mini.position = lerpVec(mini.startPosition, mini.targetPosition, motion);
+          mini.half = lerp(.5, .34, easeOutCubic(clamp(raw / .78, 0, 1)));
+          mini.rotation = {
+            x: approachAngle(mini.startRotation.x, mini.targetRotation.x, motion),
+            y: approachAngle(mini.startRotation.y, mini.targetRotation.y, motion),
+            z: approachAngle(mini.startRotation.z, mini.targetRotation.z, motion)
+          };
+        }
+
+        if (raw >= 1) {
+          app.state = 'grid';
+          app.hexOpacity = 0;
+          for (const mini of app.minis) {
+            mini.position = cloneVec(mini.targetPosition);
+            mini.half = .34;
+          }
+          modeReadout.textContent = 'GRID ONLINE';
+          hintReadout.textContent = 'SELECT A DIMENSION';
+        }
+      }
+
+      function updateMaster(dt, time) {
+        if (time >= master.driftAt) {
+          master.velocityTarget = {
+            x: randomBetween(-.19, .19),
+            y: randomBetween(-.28, .28),
+            z: randomBetween(-.12, .12)
+          };
+          master.driftAt = time + randomBetween(3000, 5000);
+        }
+        const smoothing = 1 - Math.pow(.002, dt);
+        master.velocity.x = lerp(master.velocity.x, master.velocityTarget.x, smoothing);
+        master.velocity.y = lerp(master.velocity.y, master.velocityTarget.y, smoothing);
+        master.velocity.z = lerp(master.velocity.z, master.velocityTarget.z, smoothing);
+        master.rotation.x += master.velocity.x * dt;
+        master.rotation.y += master.velocity.y * dt;
+        master.rotation.z += master.velocity.z * dt;
+      }
+
+      function updateMinis(dt, time) {
+        for (const mini of app.minis) {
+          const speed = app.hoveredIndex === mini.index ? 1.12 : 1;
+          mini.rotation.x += mini.velocity.x * dt * speed;
+          mini.rotation.y += mini.velocity.y * dt * speed;
+          mini.rotation.z += mini.velocity.z * dt * speed;
+          mini.position.y += Math.sin(time * .0007 + mini.wobble) * .00065 * dt;
+        }
+      }
+
+      // -------------------------------------------------------------------
+      // Hit testing and labels
+      // -------------------------------------------------------------------
+      function pointInPolygon(point, polygon) {
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+          const xi = polygon[i].x;
+          const yi = polygon[i].y;
+          const xj = polygon[j].x;
+          const yj = polygon[j].y;
+          const intersects = ((yi > point.y) !== (yj > point.y)) &&
+            point.x < (xj - xi) * (point.y - yi) / ((yj - yi) || .00001) + xi;
+          if (intersects) inside = !inside;
+        }
+        return inside;
+      }
+
+      function pointInBounds(point, bounds, padding = 0) {
+        return point.x >= bounds.left - padding && point.x <= bounds.right + padding &&
+          point.y >= bounds.top - padding && point.y <= bounds.bottom + padding;
+      }
+
+      function cubeIsHit(point, hit, padding = 0) {
+        if (!hit || !pointInBounds(point, hit.bounds, padding)) return false;
+        return hit.faces.some((face) => pointInPolygon(point, face.points));
+      }
+
+      function hitTest(point) {
+        if (app.state === 'idle') return cubeIsHit(point, master.hit, 9) ? 'master' : -1;
+        if (app.state === 'grid') {
+          for (let i = app.minis.length - 1; i >= 0; i -= 1) {
+            if (cubeIsHit(point, app.minis[i].hit, 6)) return i;
+          }
+        }
+        return -1;
+      }
+
+      function updateHover() {
+        const hit = hitTest(app.pointer);
+        const next = typeof hit === 'number' ? hit : -1;
+        app.hoveredIndex = next;
+        if (app.state === 'grid') {
+          for (const mini of app.minis) mini.hovered = mini.index === next;
+        }
+        canvas.style.cursor = hit === 'master' || next >= 0 ? 'pointer' : 'default';
+      }
+
+      function drawCubeLabel(mini) {
+        if (!mini.hit) return;
+        const centerX = (mini.hit.bounds.left + mini.hit.bounds.right) / 2;
+        const bottom = mini.hit.bounds.bottom;
+        const hover = mini.hovered;
+        const unit = clamp(Math.min(viewport.width, viewport.height) / 600, .62, 1.18);
+        const labelSize = clamp(11 * unit, 8, 13);
+        const urlSize = clamp(8 * unit, 7, 10);
+        const labelY = bottom + 23 * unit;
+        const urlY = labelY + 13 * unit;
+
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = `600 ${labelSize}px ${FONT_STACK}`;
+        ctx.fillStyle = hover ? '#ffffff' : 'rgba(227, 255, 246, .78)';
+        ctx.shadowColor = hover ? SIGNAL_COLOR : 'rgba(0, 255, 102, .28)';
+        ctx.shadowBlur = hover ? 12 : 5;
+        ctx.fillText(mini.label, centerX, labelY);
+        ctx.shadowBlur = 0;
+        ctx.font = `${urlSize}px ${FONT_STACK}`;
+        ctx.fillStyle = hover ? 'rgba(0, 255, 102, .95)' : 'rgba(0, 255, 102, .53)';
+        ctx.fillText(mini.href, centerX, urlY);
+
+        if (hover) {
+          ctx.strokeStyle = 'rgba(0, 255, 102, .48)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(centerX - Math.min(33, viewport.width * .06), urlY + 9);
+          ctx.lineTo(centerX + Math.min(33, viewport.width * .06), urlY + 9);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // -------------------------------------------------------------------
+      // Frame rendering
+      // -------------------------------------------------------------------
+      function renderMaster() {
+        const glitchActive = glitch.active;
+        if (glitchActive) {
+          // Offset color passes create a restrained chromatic split around the
+          // main wireframe; the final white pass remains the visual anchor.
+          renderCube(master, {
+            wireOnly: true,
+            edgeColor: 'rgba(255, 25, 107, .48)',
+            edgeAlpha: .65 * glitch.intensity,
+            offsetX: -4.2 * glitch.intensity,
+            jitter: 1.5 * glitch.intensity,
+            seed: glitch.seed + 8
+          });
+          renderCube(master, {
+            wireOnly: true,
+            edgeColor: 'rgba(0, 222, 255, .52)',
+            edgeAlpha: .72 * glitch.intensity,
+            offsetX: 4.2 * glitch.intensity,
+            jitter: 1.3 * glitch.intensity,
+            seed: glitch.seed + 29
+          });
+        }
+        master.hit = renderCube(master, {
+          jitter: glitchActive ? 2.2 * glitch.intensity : 0,
+          seed: glitch.seed,
+          edgeAlpha: glitchActive ? .88 : 1
+        });
+      }
+
+      function renderMini(mini) {
+        const hovered = mini.hovered;
+        const glitchActive = glitch.active;
+        const renderTarget = hovered ? { ...mini, half: mini.half * 1.09 } : mini;
+        if (glitchActive) {
+          renderCube(renderTarget, {
+            wireOnly: true,
+            edgeColor: 'rgba(255, 24, 112, .32)',
+            edgeAlpha: .44 * glitch.intensity,
+            offsetX: -2.8 * glitch.intensity,
+            jitter: .85 * glitch.intensity,
+            seed: glitch.seed + mini.index * 9
+          });
+        }
+        mini.hit = renderCube(renderTarget, {
+          jitter: glitchActive ? 1.05 * glitch.intensity : 0,
+          seed: glitch.seed + mini.index,
+          edgeAlpha: hovered ? 1.35 : .92,
+          edgeColor: hovered ? '#ffffff' : EDGE_COLOR,
+          fillAlpha: hovered ? 1.16 : .88,
+          textureAlpha: hovered ? 1.18 : .82
+        });
+        if (hovered) {
+          const bounds = mini.hit.bounds;
+          ctx.save();
+          ctx.globalAlpha = .13;
+          ctx.strokeStyle = SIGNAL_COLOR;
+          ctx.shadowColor = SIGNAL_COLOR;
+          ctx.shadowBlur = 18;
+          ctx.lineWidth = 1;
+          ctx.strokeRect(bounds.left - 5, bounds.top - 5, bounds.right - bounds.left + 10, bounds.bottom - bounds.top + 10);
+          ctx.restore();
+        }
+      }
+
+      function render(time) {
+        drawBackground(time);
+        updateGlitch(time);
+
+        if (app.state === 'idle') {
+          drawHexagons(time, app.hexOpacity);
+          renderMaster();
+        } else {
+          if (app.state === 'transition') updateTransition(time);
+          if (app.hexOpacity > .001) drawHexagons(time, app.hexOpacity);
+
+          // During the transition the eight cubes are part of one moving
+          // composition. At the destination, render and label them in grid
+          // order so depth overlap never hides the intended navigation order.
+          for (const mini of app.minis) renderMini(mini);
+          if (app.state === 'grid') {
+            for (const mini of app.minis) drawCubeLabel(mini);
+          }
+        }
+
+        if (app.state === 'idle' || app.state === 'grid') updateHover();
+        drawGlitchOverlays(time);
+      }
+
+      function frame(time) {
+        const elapsed = Math.min(42, time - app.lastTime);
+        const dt = elapsed / 1000;
+        app.lastTime = time;
+        app.frame += 1;
+
+        if (app.state === 'idle') updateMaster(dt, time);
+        if (app.state === 'grid') updateMinis(dt, time);
+        render(time);
+        requestAnimationFrame(frame);
+      }
+
+      // -------------------------------------------------------------------
+      // Pointer and keyboard interaction
+      // -------------------------------------------------------------------
+      function pointerPosition(event) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+          x: event.clientX - rect.left,
+          y: event.clientY - rect.top
+        };
+      }
+
+      canvas.addEventListener('pointermove', (event) => {
+        app.pointer = pointerPosition(event);
+        updateHover();
+      });
+
+      canvas.addEventListener('pointerleave', () => {
+        app.pointer = { x: -9999, y: -9999 };
+        app.hoveredIndex = -1;
+        for (const mini of app.minis) mini.hovered = false;
+        canvas.style.cursor = 'default';
+      });
+
+      canvas.addEventListener('pointerdown', (event) => {
+        app.pointer = pointerPosition(event);
+        const hit = hitTest(app.pointer);
+        if (hit === 'master') {
+          beginSplit(performance.now());
+          return;
+        }
+        if (typeof hit === 'number' && app.state === 'grid') {
+          const destination = app.minis[hit].href;
+          window.location.assign(destination);
+        }
+      });
+
+      canvas.addEventListener('keydown', (event) => {
+        if ((event.key === 'Enter' || event.key === ' ') && app.state === 'idle') {
+          event.preventDefault();
+          beginSplit(performance.now());
+        }
+      });
+
+      window.addEventListener('resize', resizeCanvas, { passive: true });
+
+      // Start only after all state exists; this also makes a resize before the
+      // first frame safe.
+      resizeCanvas();
+      requestAnimationFrame((time) => {
+        app.lastTime = time;
+        frame(time);
+      });
+    })();
+  </script>
+</body>
+</html>
