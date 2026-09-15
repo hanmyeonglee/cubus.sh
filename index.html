@@ -39,6 +39,16 @@
       outline: none;
       touch-action: none;
       cursor: default;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 180ms ease-out;
+    }
+
+    #scene.is-visible {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
     }
 
     .terminal-header {
@@ -58,6 +68,124 @@
       white-space: nowrap;
       user-select: none;
       pointer-events: none;
+      appearance: none;
+      border-radius: 0;
+      font: inherit;
+      transition:
+        top 680ms cubic-bezier(.22, .8, .2, 1),
+        transform 680ms cubic-bezier(.22, .8, .2, 1),
+        padding 680ms cubic-bezier(.22, .8, .2, 1),
+        font-size 680ms cubic-bezier(.22, .8, .2, 1),
+        letter-spacing 680ms cubic-bezier(.22, .8, .2, 1),
+        background 260ms ease,
+        border-color 260ms ease,
+        box-shadow 260ms ease,
+        color 260ms ease;
+    }
+
+    .boot-launch {
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 4;
+      padding: 17px 24px 18px;
+      color: rgba(0, 255, 102, .94);
+      background: rgba(5, 12, 17, .72);
+      border-color: rgba(0, 255, 102, .66);
+      box-shadow:
+        0 0 12px rgba(0, 255, 102, .18),
+        inset 0 0 20px rgba(0, 255, 102, .035);
+      font-size: clamp(18px, 2.2vw, 24px);
+      letter-spacing: .13em;
+      cursor: pointer;
+      pointer-events: auto;
+      text-shadow: 0 0 10px rgba(0, 255, 102, .72);
+    }
+
+    .boot-launch::before,
+    .boot-launch::after {
+      position: absolute;
+      width: 8px;
+      height: 8px;
+      content: "";
+      border-color: rgba(0, 255, 102, .9);
+      pointer-events: none;
+    }
+
+    .boot-launch::before {
+      top: -1px;
+      left: -1px;
+      border-top: 2px solid;
+      border-left: 2px solid;
+    }
+
+    .boot-launch::after {
+      right: -1px;
+      bottom: -1px;
+      border-right: 2px solid;
+      border-bottom: 2px solid;
+    }
+
+    .boot-launch:hover,
+    .boot-launch:focus-visible {
+      color: #ffffff;
+      border-color: rgba(0, 255, 102, .98);
+      background: rgba(0, 38, 30, .72);
+      box-shadow:
+        0 0 20px rgba(0, 255, 102, .3),
+        inset 0 0 24px rgba(0, 255, 102, .09);
+      outline: none;
+    }
+
+    .boot-launch.is-docking {
+      top: max(18px, env(safe-area-inset-top));
+      transform: translateX(-50%);
+      padding: 8px 13px 9px;
+      color: rgba(0, 255, 102, .82);
+      background: rgba(8, 8, 12, .48);
+      border-color: rgba(0, 255, 102, .11);
+      box-shadow: 0 0 18px rgba(0, 255, 102, .045);
+      font-size: clamp(11px, 1.2vw, 13px);
+      letter-spacing: .16em;
+      cursor: default;
+      pointer-events: none;
+      text-shadow: none;
+    }
+
+    .boot-prompt {
+      position: fixed;
+      z-index: 3;
+      top: calc(50% - 78px);
+      left: 50%;
+      display: grid;
+      gap: 8px;
+      justify-items: center;
+      color: rgba(197, 255, 229, .65);
+      font-size: clamp(11px, 1.2vw, 14px);
+      letter-spacing: .24em;
+      line-height: 1;
+      pointer-events: none;
+      transform: translateX(-50%);
+      transition: opacity 130ms ease, transform 180ms ease;
+      user-select: none;
+    }
+
+    .boot-prompt.is-hidden {
+      opacity: 0;
+      transform: translate(-50%, -10px);
+      visibility: hidden;
+    }
+
+    .boot-arrow {
+      color: #00ff66;
+      font-size: 20px;
+      line-height: .7;
+      text-shadow: 0 0 10px rgba(0, 255, 102, .8);
+      animation: boot-arrow-pulse 1.15s ease-in-out infinite;
+    }
+
+    @keyframes boot-arrow-pulse {
+      0%, 100% { opacity: .48; transform: translateY(-1px); }
+      50% { opacity: 1; transform: translateY(4px); }
     }
 
     .terminal-header .prompt {
@@ -78,6 +206,7 @@
       text-transform: uppercase;
       pointer-events: none;
       user-select: none;
+      transition: opacity 240ms ease;
     }
 
     .hud .accent { color: rgba(0, 255, 102, .66); }
@@ -92,18 +221,31 @@
       letter-spacing: .14em;
       pointer-events: none;
       user-select: none;
+      transition: opacity 240ms ease;
+    }
+
+    body.booting .hud,
+    body.booting .corner-mark {
+      opacity: 0;
     }
 
     @media (max-width: 560px) {
       .terminal-header { letter-spacing: .1em; }
       .hud,
       .corner-mark { font-size: 8px; }
+      .boot-prompt { letter-spacing: .16em; }
     }
   </style>
 </head>
-<body>
+<body class="booting">
   <canvas id="scene" tabindex="0" aria-label="Interactive three-dimensional cubus navigation"></canvas>
-  <div class="terminal-header"><span class="prompt">$</span> ./cubus.sh</div>
+  <button id="terminal-launch" class="terminal-header boot-launch" type="button" aria-label="Execute cubus.sh">
+    <span class="prompt">$</span> ./cubus.sh
+  </button>
+  <div id="boot-prompt" class="boot-prompt" aria-hidden="false">
+    <span>[ EXECUTE ]</span>
+    <span class="boot-arrow" aria-hidden="true">↓</span>
+  </div>
   <div class="corner-mark">SYS / DIMENSIONAL-01</div>
   <div class="hud"><span class="accent" id="mode">CORE ONLINE</span><br><span id="hint">CLICK THE CUBE TO SPLIT</span></div>
 
@@ -116,6 +258,8 @@
       // -------------------------------------------------------------------
       const canvas = document.getElementById('scene');
       const ctx = canvas.getContext('2d', { alpha: false });
+      const terminalLaunch = document.getElementById('terminal-launch');
+      const bootPrompt = document.getElementById('boot-prompt');
       const modeReadout = document.getElementById('mode');
       const hintReadout = document.getElementById('hint');
 
@@ -833,7 +977,7 @@
       };
 
       const app = {
-        state: 'idle',
+        state: 'boot',
         transitionStartedAt: 0,
         transitionDuration: 1720,
         hexOpacity: 1,
@@ -843,6 +987,16 @@
         lastTime: performance.now(),
         frame: 0
       };
+
+      const bootSequence = {
+        active: false,
+        startedAt: 0,
+        duration: 300,
+        seed: 0,
+        buffer: null,
+        bufferContext: null
+      };
+      let isBooted = false;
 
       function triggerMasterRotationBoost(time) {
         const base = {
@@ -1006,6 +1160,126 @@
         master.rotation.x += master.velocity.x * dt;
         master.rotation.y += master.velocity.y * dt;
         master.rotation.z += master.velocity.z * dt;
+      }
+
+      function updateBootSequence(time) {
+        const progress = clamp((time - bootSequence.startedAt) / bootSequence.duration, 0, 1);
+        if (progress < 1) return;
+
+        bootSequence.active = false;
+        isBooted = true;
+        app.state = 'idle';
+        glitch.nextAt = time + randomBetween(4000, 8000);
+        document.body.classList.remove('booting');
+        canvas.style.transform = '';
+      }
+
+      function beginBootSequence(time) {
+        if (isBooted || bootSequence.active || app.state !== 'boot') return;
+
+        bootSequence.active = true;
+        bootSequence.startedAt = time;
+        bootSequence.duration = randomBetween(240, 330);
+        bootSequence.seed = Math.random() * 10000;
+        app.state = 'booting';
+        terminalLaunch.classList.add('is-docking');
+        terminalLaunch.setAttribute('aria-disabled', 'true');
+        bootPrompt.classList.add('is-hidden');
+        bootPrompt.setAttribute('aria-hidden', 'true');
+        canvas.classList.add('is-visible');
+
+        // The launch gesture both unlocks native media playback and produces
+        // the first randomized static burst for the boot sequence.
+        unlockStaticGlitchAudio();
+        playClickPop();
+
+        app.lastTime = time;
+        requestAnimationFrame(frame);
+      }
+
+      function ensureBootGlitchBuffer() {
+        if (bootSequence.buffer &&
+            bootSequence.buffer.width === canvas.width &&
+            bootSequence.buffer.height === canvas.height) {
+          return Boolean(bootSequence.bufferContext);
+        }
+
+        bootSequence.buffer = document.createElement('canvas');
+        bootSequence.buffer.width = canvas.width;
+        bootSequence.buffer.height = canvas.height;
+        bootSequence.bufferContext = bootSequence.buffer.getContext('2d');
+        return Boolean(bootSequence.bufferContext);
+      }
+
+      function drawBootGlitch(time) {
+        const progress = clamp((time - bootSequence.startedAt) / bootSequence.duration, 0, 1);
+        const pulse = Math.sin(Math.PI * progress);
+        if (pulse < .01) {
+          canvas.style.transform = '';
+          return;
+        }
+
+        const frameSeed = bootSequence.seed + Math.floor(time / 16.6667);
+        const shakeX = hashNoise(frameSeed + 12) * 10 * pulse;
+        const shakeY = hashNoise(frameSeed + 37) * 7 * pulse;
+        canvas.style.transform = `translate(${shakeX.toFixed(2)}px, ${shakeY.toFixed(2)}px)`;
+
+        if (!ensureBootGlitchBuffer()) return;
+        const bufferContext = bootSequence.bufferContext;
+        const width = canvas.width;
+        const height = canvas.height;
+        const dpr = viewport.dpr;
+
+        bufferContext.setTransform(1, 0, 0, 1, 0, 0);
+        bufferContext.clearRect(0, 0, width, height);
+        bufferContext.drawImage(canvas, 0, 0);
+
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+        // Two tinted, offset copies create a full-canvas cyan/magenta split.
+        const channelOffset = Math.round((5 + 9 * pulse) * dpr);
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = .3 * pulse;
+        ctx.filter = `contrast(${1.35 + pulse * .8}) saturate(4) hue-rotate(145deg)`;
+        ctx.drawImage(bootSequence.buffer, channelOffset, 0);
+        ctx.filter = `contrast(${1.35 + pulse * .8}) saturate(5) hue-rotate(295deg)`;
+        ctx.drawImage(bootSequence.buffer, -channelOffset, 0);
+        ctx.filter = 'none';
+
+        // Displaced horizontal slices keep the burst tied to the rendered
+        // scene while making the scanline breakup sharp and short-lived.
+        const sliceCount = 10 + Math.floor(pulse * 8);
+        for (let i = 0; i < sliceCount; i += 1) {
+          const sliceY = Math.floor(((i + .5) / sliceCount) * height);
+          const sliceHeight = Math.max(2, Math.floor((2 + Math.abs(hashNoise(frameSeed + i * 2.7)) * 7) * dpr));
+          const displacement = Math.round(hashNoise(frameSeed + 90 + i * 4.1) * (12 + pulse * 28) * dpr);
+          const sourceY = clamp(sliceY - Math.floor(sliceHeight / 2), 0, height - sliceHeight);
+          const tint = i % 2 ? 'rgba(255, 43, 181, .22)' : 'rgba(0, 240, 255, .24)';
+
+          ctx.globalCompositeOperation = 'screen';
+          ctx.globalAlpha = (.22 + Math.abs(hashNoise(frameSeed + i)) * .2) * pulse;
+          ctx.drawImage(
+            bootSequence.buffer,
+            0, sourceY, width, sliceHeight,
+            displacement, sourceY, width, sliceHeight
+          );
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = .72 * pulse;
+          ctx.fillStyle = tint;
+          ctx.fillRect(0, sourceY, width, Math.max(1, Math.ceil(dpr)));
+        }
+
+        // Fine scanlines sell the electrical burst without leaving a
+        // persistent overlay after the boot state has completed.
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = .09 * pulse;
+        ctx.fillStyle = 'rgba(0, 240, 255, .9)';
+        const lineStep = Math.max(3, Math.round(5 * dpr));
+        for (let y = 0; y < height; y += lineStep) {
+          ctx.fillRect(0, y, width, Math.max(1, Math.round(dpr * .42)));
+        }
+        ctx.restore();
       }
 
       function updateMinis(dt, time) {
@@ -1196,6 +1470,23 @@
         });
       }
 
+      function renderBootSequence(time) {
+        const progress = clamp((time - bootSequence.startedAt) / bootSequence.duration, 0, 1);
+        const reveal = easeOutCubic(clamp((progress - .08) / .68, 0, 1));
+
+        drawBackground(time);
+        if (reveal > .001) {
+          ctx.save();
+          ctx.globalAlpha = reveal;
+          drawHexagons(time, 1);
+          renderMaster(time);
+          ctx.restore();
+        } else {
+          master.hit = null;
+        }
+        drawBootGlitch(time);
+      }
+
       function renderMini(mini, time) {
         const hovered = mini.hovered;
         const glitchActive = glitch.active;
@@ -1263,9 +1554,16 @@
         app.lastTime = time;
         app.frame += 1;
 
-        if (app.state === 'idle') updateMaster(dt, time);
-        if (app.state === 'grid') updateMinis(dt, time);
-        render(time);
+        const booting = app.state === 'booting';
+        if (booting) {
+          updateMaster(dt, time);
+          updateBootSequence(time);
+          renderBootSequence(time);
+        } else {
+          if (app.state === 'idle') updateMaster(dt, time);
+          if (app.state === 'grid') updateMinis(dt, time);
+          render(time);
+        }
         requestAnimationFrame(frame);
       }
 
@@ -1284,7 +1582,17 @@
       // real gesture so browser media policies are respected.
       window.addEventListener('pointerdown', unlockStaticGlitchAudio, { capture: true });
       window.addEventListener('touchstart', unlockStaticGlitchAudio, { capture: true, passive: true });
-      window.addEventListener('keydown', unlockStaticGlitchAudio, { capture: true });
+      window.addEventListener('keydown', (event) => {
+        unlockStaticGlitchAudio();
+        if (!isBooted && app.state === 'boot' && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault();
+          beginBootSequence(performance.now());
+        }
+      }, { capture: true });
+
+      terminalLaunch.addEventListener('click', () => {
+        beginBootSequence(performance.now());
+      });
 
       canvas.addEventListener('pointermove', (event) => {
         app.pointer = pointerPosition(event);
@@ -1323,13 +1631,9 @@
       window.addEventListener('resize', resizeCanvas, { passive: true });
 
       // Start only after all state exists; this also makes a resize before the
-      // first frame safe.
+      // first boot frame safe. The scene loop intentionally waits for launch.
       preloadStaticGlitchAudio();
       resizeCanvas();
-      requestAnimationFrame((time) => {
-        app.lastTime = time;
-        frame(time);
-      });
     })();
   </script>
 </body>
