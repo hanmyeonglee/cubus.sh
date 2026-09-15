@@ -294,6 +294,17 @@
 
       const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
       const lerp = (a, b, t) => a + (b - a) * t;
+      const blendHexColor = (from, to, amount) => {
+        const parse = (hex) => [
+          parseInt(hex.slice(1, 3), 16),
+          parseInt(hex.slice(3, 5), 16),
+          parseInt(hex.slice(5, 7), 16)
+        ];
+        const a = parse(from);
+        const b = parse(to);
+        const t = clamp(amount, 0, 1);
+        return `rgb(${Math.round(lerp(a[0], b[0], t))}, ${Math.round(lerp(a[1], b[1], t))}, ${Math.round(lerp(a[2], b[2], t))})`;
+      };
       const easeInOutCubic = (t) => {
         t = clamp(t, 0, 1);
         return t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -577,7 +588,7 @@
         return projected;
       }
 
-      function strokeProjectedPath(points, color, width, alpha = 1) {
+      function strokeProjectedPath(points, color, width, alpha = 1, glow = 0) {
         if (!points.length) return;
         ctx.save();
         ctx.globalAlpha = alpha;
@@ -585,6 +596,8 @@
         ctx.lineWidth = width;
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
+        ctx.shadowColor = color;
+        ctx.shadowBlur = glow;
         ctx.beginPath();
         ctx.moveTo(points[0].x, points[0].y);
         for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
@@ -650,6 +663,11 @@
           textureAlpha: 1,
           edgeColor: EDGE_COLOR,
           edgeAlpha: 1,
+          edgeGlow: 1,
+          faceOutlineColor: VECTOR_COLOR,
+          faceOutlineAlpha: .28,
+          faceOutlineScale: 1,
+          faceGlow: 0,
           fillAlpha: 1,
           ...options
         };
@@ -702,7 +720,13 @@
             drawFaceTexture(cube, item.face, settings, item.facing);
             // The faint face border reinforces the planar texture without
             // replacing the crisp cube edge pass below.
-            strokeProjectedPath(item.points.concat([item.points[0]]), VECTOR_COLOR, Math.max(.45, cube.half * .48), localAlpha * .28);
+            strokeProjectedPath(
+              item.points.concat([item.points[0]]),
+              settings.faceOutlineColor,
+              Math.max(.45, cube.half * .48) * settings.faceOutlineScale,
+              localAlpha * settings.faceOutlineAlpha,
+              settings.faceGlow
+            );
           }
         }
 
@@ -714,7 +738,7 @@
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
         ctx.shadowColor = settings.edgeColor;
-        ctx.shadowBlur = settings.edgeColor === EDGE_COLOR ? Math.max(5, cube.half * 5.2) : Math.max(3, cube.half * 3);
+        ctx.shadowBlur = (settings.edgeColor === EDGE_COLOR ? Math.max(5, cube.half * 5.2) : Math.max(3, cube.half * 3)) * settings.edgeGlow;
         for (const [from, to] of cubeEdges) {
           ctx.beginPath();
           ctx.moveTo(projectedVertices[from].x, projectedVertices[from].y);
@@ -742,60 +766,125 @@
       }
 
       // -------------------------------------------------------------------
-      // Orbiting hexagons
+      // Orbiting one-byte hexadecimal particles
       // -------------------------------------------------------------------
-      const hexagons = Array.from({ length: 12 }, (_, index) => ({
+      const orbitingBytes = Array.from({ length: 12 }, (_, index) => ({
         index,
+        value: `0x${Math.floor(Math.random() * 256).toString(16).padStart(2, '0').toUpperCase()}`,
         orbit: randomBetween(0, TAU),
         radius: randomBetween(1.65, 2.55),
         height: randomBetween(-1.35, 1.35),
         tilt: randomBetween(-.65, .65),
-        size: randomBetween(4.5, 9.5),
+        size: randomBetween(8.5, 13.5),
         speed: randomBetween(.045, .095) * (index % 2 ? -1 : 1),
         spin: randomBetween(-.45, .45),
         phase: randomBetween(0, TAU),
         opacity: randomBetween(.55, 1)
       }));
 
-      function hexWorldPosition(hex, time) {
-        const orbit = hex.orbit + time * .00012 * hex.speed * 12;
-        const vertical = hex.height + Math.sin(time * .00055 + hex.phase) * .16;
+      const DIGITAL_SEGMENTS = {
+        '0': ['a', 'b', 'c', 'd', 'e', 'f'],
+        '1': ['b', 'c'],
+        '2': ['a', 'b', 'd', 'e', 'g'],
+        '3': ['a', 'b', 'c', 'd', 'g'],
+        '4': ['b', 'c', 'f', 'g'],
+        '5': ['a', 'c', 'd', 'f', 'g'],
+        '6': ['a', 'c', 'd', 'e', 'f', 'g'],
+        '7': ['a', 'b', 'c'],
+        '8': ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+        '9': ['a', 'b', 'c', 'd', 'f', 'g'],
+        A: ['a', 'b', 'c', 'e', 'f', 'g'],
+        B: ['c', 'd', 'e', 'f', 'g'],
+        C: ['a', 'd', 'e', 'f'],
+        D: ['b', 'c', 'd', 'e', 'g'],
+        E: ['a', 'd', 'e', 'f', 'g'],
+        F: ['a', 'e', 'f', 'g'],
+        x: ['x']
+      };
+
+      function drawDigitalByte(value, size) {
+        const height = size;
+        const width = size * .56;
+        const thickness = Math.max(.8, size * .095);
+        const gap = size * .14;
+        const totalWidth = value.length * width + (value.length - 1) * gap;
+        const top = -height / 2;
+        const firstLeft = -totalWidth / 2;
+
+        ctx.save();
+        ctx.strokeStyle = SIGNAL_COLOR;
+        ctx.lineWidth = thickness;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.shadowColor = SIGNAL_COLOR;
+        ctx.shadowBlur = Math.max(3, size * .72);
+
+        for (let index = 0; index < value.length; index += 1) {
+          const character = value[index];
+          const left = firstLeft + index * (width + gap);
+          const mid = top + height / 2;
+          const inset = thickness * .55;
+          const segments = {
+            a: [left + inset, top + inset, left + width - inset, top + inset],
+            b: [left + width - inset, top + inset, left + width - inset, mid - inset],
+            c: [left + width - inset, mid + inset, left + width - inset, top + height - inset],
+            d: [left + inset, top + height - inset, left + width - inset, top + height - inset],
+            e: [left + inset, mid + inset, left + inset, top + height - inset],
+            f: [left + inset, top + inset, left + inset, mid - inset],
+            g: [left + inset, mid, left + width - inset, mid],
+            x: [
+              [left + inset, top + inset, left + width - inset, top + height - inset],
+              [left + width - inset, top + inset, left + inset, top + height - inset]
+            ]
+          };
+
+          for (const segment of DIGITAL_SEGMENTS[character] || []) {
+            if (segment === 'x') {
+              for (const diagonal of segments.x) {
+                ctx.beginPath();
+                ctx.moveTo(diagonal[0], diagonal[1]);
+                ctx.lineTo(diagonal[2], diagonal[3]);
+                ctx.stroke();
+              }
+              continue;
+            }
+            const line = segments[segment];
+            ctx.beginPath();
+            ctx.moveTo(line[0], line[1]);
+            ctx.lineTo(line[2], line[3]);
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+      }
+
+      function orbitingByteWorldPosition(particle, time) {
+        const orbit = particle.orbit + time * .00012 * particle.speed * 12;
+        const vertical = particle.height + Math.sin(time * .00055 + particle.phase) * .16;
         return vec(
-          Math.cos(orbit) * hex.radius,
+          Math.cos(orbit) * particle.radius,
           vertical,
-          Math.sin(orbit) * hex.radius * .68
+          Math.sin(orbit) * particle.radius * .68
         );
       }
 
-      function drawHexagons(time, opacity) {
+      function drawOrbitingBytes(time, opacity) {
         if (opacity <= .001) return;
         ctx.save();
-        for (const hex of hexagons) {
-          const world = hexWorldPosition(hex, time);
+        for (const particle of orbitingBytes) {
+          const world = orbitingByteWorldPosition(particle, time);
           const center = worldToScreen(world);
           const depthScale = CAMERA_FOCAL / Math.max(.8, CAMERA_Z - world.z);
-          const radius = hex.size * depthScale * (viewport.scale / 240);
-          const rotation = hex.phase + time * .0004 * hex.spin;
-          const points = [];
-          for (let i = 0; i < 6; i += 1) {
-            const angle = rotation + i * TAU / 6;
-            points.push({
-              x: center.x + Math.cos(angle) * radius,
-              y: center.y + Math.sin(angle) * radius
-            });
-          }
-          const green = `rgba(0, 255, 102, ${opacity * hex.opacity})`;
-          ctx.globalAlpha = 1;
-          ctx.strokeStyle = green;
-          ctx.lineWidth = Math.max(.65, radius * .095);
-          ctx.lineJoin = 'round';
-          ctx.shadowColor = SIGNAL_COLOR;
-          ctx.shadowBlur = Math.max(4, radius * .9);
-          ctx.beginPath();
-          ctx.moveTo(points[0].x, points[0].y);
-          for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
-          ctx.closePath();
-          ctx.stroke();
+          const fontSize = clamp(particle.size * depthScale * (viewport.scale / 240), 7, 14);
+          const particleOpacity = opacity * particle.opacity * clamp(.72 + depthScale * .18, .72, 1);
+          const rotation = particle.phase + time * .0004 * particle.spin;
+
+          ctx.globalAlpha = particleOpacity;
+          ctx.save();
+          ctx.translate(center.x, center.y);
+          ctx.rotate(rotation);
+          drawDigitalByte(particle.value, fontSize);
+          ctx.restore();
         }
         ctx.restore();
       }
@@ -973,7 +1062,10 @@
         velocityTarget: { x: .12, y: .22, z: -.075 },
         rotationBoost: null,
         driftAt: randomBetween(3000, 5000),
-        hit: null
+        hit: null,
+        hovered: false,
+        hoverScale: 1,
+        hoverStrength: 0
       };
 
       const app = {
@@ -1088,6 +1180,9 @@
         app.hexOpacity = 1;
         app.hoveredIndex = -1;
         master.hit = null;
+        master.hovered = false;
+        master.hoverScale = 1;
+        master.hoverStrength = 0;
         buildMinis();
 
         for (const mini of app.minis) {
@@ -1160,6 +1255,14 @@
         master.rotation.x += master.velocity.x * dt;
         master.rotation.y += master.velocity.y * dt;
         master.rotation.z += master.velocity.z * dt;
+
+        const targetHover = master.hovered ? 1 : 0;
+        // Reach the new hover state over roughly 240ms in a frame-rate
+        // independent way, including the fade back after pointerleave.
+        const hoverSmoothing = 1 - Math.pow(.001, dt / .24);
+        master.hoverStrength = lerp(master.hoverStrength, targetHover, hoverSmoothing);
+        const targetScale = 1 + targetHover * .1;
+        master.hoverScale = lerp(master.hoverScale, targetScale, hoverSmoothing);
       }
 
       function updateBootSequence(time) {
@@ -1333,6 +1436,7 @@
         const hit = hitTest(app.pointer);
         const next = typeof hit === 'number' ? hit : -1;
         app.hoveredIndex = next;
+        master.hovered = app.state === 'idle' && hit === 'master';
         if (app.state === 'grid') {
           for (const mini of app.minis) mini.hovered = mini.index === next;
         }
@@ -1438,13 +1542,15 @@
       // Frame rendering
       // -------------------------------------------------------------------
       function renderMaster(time) {
+        const hoverStrength = master.hoverStrength;
+        const renderTarget = { ...master, half: master.half * master.hoverScale };
         const glitchActive = glitch.active;
         const frameSeed = glitch.seed + Math.floor(time / 16.6667);
         if (glitchActive) {
           // High-contrast cyan/magenta passes create a localized chromatic
           // split around the wireframe; the final white pass remains the
           // visual anchor.
-          renderCube(master, {
+          renderCube(renderTarget, {
             wireOnly: true,
             edgeColor: GLITCH_MAGENTA,
             edgeAlpha: .92 * glitch.intensity,
@@ -1453,7 +1559,7 @@
             vertexJitter: .11 * glitch.intensity,
             seed: frameSeed + 8
           });
-          renderCube(master, {
+          renderCube(renderTarget, {
             wireOnly: true,
             edgeColor: GLITCH_CYAN,
             edgeAlpha: .96 * glitch.intensity,
@@ -1463,10 +1569,15 @@
             seed: frameSeed + 29
           });
         }
-        master.hit = renderCube(master, {
+        master.hit = renderCube(renderTarget, {
           vertexJitter: glitchActive ? .085 * glitch.intensity : 0,
           seed: frameSeed,
-          edgeAlpha: glitchActive ? .96 : 1
+          edgeAlpha: glitchActive ? .96 : 1,
+          edgeGlow: lerp(1, 2.8, hoverStrength),
+          faceOutlineColor: blendHexColor(VECTOR_COLOR, EDGE_COLOR, hoverStrength),
+          faceOutlineAlpha: lerp(.28, .82, hoverStrength),
+          faceOutlineScale: lerp(1, 1.35, hoverStrength),
+          faceGlow: lerp(0, 10, hoverStrength)
         });
       }
 
@@ -1478,7 +1589,7 @@
         if (reveal > .001) {
           ctx.save();
           ctx.globalAlpha = reveal;
-          drawHexagons(time, 1);
+          drawOrbitingBytes(time, 1);
           renderMaster(time);
           ctx.restore();
         } else {
@@ -1530,11 +1641,11 @@
         updateGlitch(time);
 
         if (app.state === 'idle') {
-          drawHexagons(time, app.hexOpacity);
+          drawOrbitingBytes(time, app.hexOpacity);
           renderMaster(time);
         } else {
           if (app.state === 'transition') updateTransition(time);
-          if (app.hexOpacity > .001) drawHexagons(time, app.hexOpacity);
+          if (app.hexOpacity > .001) drawOrbitingBytes(time, app.hexOpacity);
 
           // During the transition the eight cubes are part of one moving
           // composition. At the destination, render and label them in grid
@@ -1602,6 +1713,7 @@
       canvas.addEventListener('pointerleave', () => {
         app.pointer = { x: -9999, y: -9999 };
         app.hoveredIndex = -1;
+        master.hovered = false;
         for (const mini of app.minis) mini.hovered = false;
         canvas.style.cursor = 'default';
       });
