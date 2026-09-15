@@ -126,6 +126,8 @@
       const MINI_GRID_HALF = .34 * .85;
       const MINI_CLUSTER_HALF = MASTER_HALF * .5;
       const RETICLE_SIZE = 96;
+      const FACE_ARROW_GAP = .26;
+      const FACE_ARROW_REACH = .70;
       const EDGE_COLOR = '#f4ffff';
       const VECTOR_COLOR = '#51f7d1';
       const SIGNAL_COLOR = '#00ff66';
@@ -469,21 +471,20 @@
         if (face.id === 'bottom') {
           // Four distinct arrows radiate from the center of the underside
           // toward the midpoint of each edge: up, down, left, and right.
-          drawChevron(cube, face, [-.19, .14], [0, .68], [.19, .14], options, alpha);
-          drawChevron(cube, face, [-.19, -.14], [0, -.68], [.19, -.14], options, alpha);
-          drawChevron(cube, face, [.14, -.19], [.68, 0], [.14, .19], options, alpha);
-          drawChevron(cube, face, [-.14, -.19], [-.68, 0], [-.14, .19], options, alpha);
-          drawLocalStroke(cube, [face.map(-.04, 0), face.map(.04, 0)], SIGNAL_COLOR, Math.max(.5, cube.half * .85), options, alpha * .6);
-          drawLocalStroke(cube, [face.map(0, -.04), face.map(0, .04)], SIGNAL_COLOR, Math.max(.5, cube.half * .85), options, alpha * .6);
+          drawChevron(cube, face, [-.20, FACE_ARROW_GAP], [0, FACE_ARROW_REACH], [.20, FACE_ARROW_GAP], options, alpha);
+          drawChevron(cube, face, [-.20, -FACE_ARROW_GAP], [0, -FACE_ARROW_REACH], [.20, -FACE_ARROW_GAP], options, alpha);
+          drawChevron(cube, face, [FACE_ARROW_GAP, -.20], [FACE_ARROW_REACH, 0], [FACE_ARROW_GAP, .20], options, alpha);
+          drawChevron(cube, face, [-FACE_ARROW_GAP, -.20], [-FACE_ARROW_REACH, 0], [-FACE_ARROW_GAP, .20], options, alpha);
           return;
         }
 
         if (face.id === 'top') {
-          // Four chevrons sit at the edges and point inward to the center.
-          drawChevron(cube, face, [-.20, .64], [0, .18], [.20, .64], options, alpha);
-          drawChevron(cube, face, [-.20, -.64], [0, -.18], [.20, -.64], options, alpha);
-          drawChevron(cube, face, [-.64, -.20], [-.18, 0], [-.64, .20], options, alpha);
-          drawChevron(cube, face, [.64, -.20], [.18, 0], [.64, .20], options, alpha);
+          // The same FACE_ARROW_GAP used by the bottom arrows keeps the
+          // inward-facing tips separated by a symmetric central void.
+          drawChevron(cube, face, [-.20, .66], [0, FACE_ARROW_GAP], [.20, .66], options, alpha);
+          drawChevron(cube, face, [-.20, -.66], [0, -FACE_ARROW_GAP], [.20, -.66], options, alpha);
+          drawChevron(cube, face, [-.66, -.20], [-FACE_ARROW_GAP, 0], [-.66, .20], options, alpha);
+          drawChevron(cube, face, [.66, -.20], [FACE_ARROW_GAP, 0], [.66, .20], options, alpha);
           return;
         }
 
@@ -656,7 +657,7 @@
       }
 
       // -------------------------------------------------------------------
-      // Glitch scheduler and procedural Web Audio
+      // Glitch scheduler and cube-only visual distortion
       // -------------------------------------------------------------------
       const glitch = {
         enabled: true,
@@ -665,133 +666,116 @@
         duration: 0,
         seed: 0,
         nextAt: randomBetween(4000, 8000),
-        intensity: 0
+        intensity: 0,
+        audioPlayed: false
       };
 
-      let audioContext = null;
+      // -------------------------------------------------------------------
+      // Static glitch audio assets
+      // -------------------------------------------------------------------
+      const STATIC_GLITCH_SOURCES = [
+        'static/audio/glitch01.mp3',
+        'static/audio/glitch02.mp3',
+        'static/audio/glitch03.mp3',
+        'static/audio/glitch04.mp3',
+        'static/audio/glitch05.mp3'
+      ];
+      const STATIC_GLITCH_VOLUME = .5;
+      const staticGlitchAudio = {
+        clips: [],
+        preloaded: false,
+        unlocked: false,
+        previousIndex: -1,
+        warnedAboutAutoplay: false
+      };
 
-      function makeDistortionCurve(amount = 45) {
-        const samples = 256;
-        const curve = new Float32Array(samples);
-        for (let i = 0; i < samples; i += 1) {
-          const x = i * 2 / (samples - 1) - 1;
-          curve[i] = ((1 + amount) * x) / (1 + amount * Math.abs(x));
+      function preloadStaticGlitchAudio() {
+        if (staticGlitchAudio.preloaded) return staticGlitchAudio.clips;
+        if (typeof window.Audio !== 'function') {
+          console.warn('[CUBUS AUDIO] HTMLAudioElement is unavailable; static glitch audio cannot play.');
+          return [];
         }
-        return curve;
+
+        staticGlitchAudio.clips = STATIC_GLITCH_SOURCES.map((sourcePath) => {
+          const clip = new window.Audio();
+          clip.preload = 'auto';
+          clip.src = sourcePath;
+          clip.volume = STATIC_GLITCH_VOLUME;
+          clip.playsInline = true;
+          clip.load();
+          return clip;
+        });
+        staticGlitchAudio.preloaded = true;
+        return staticGlitchAudio.clips;
       }
 
-      function ensureAudio() {
-        if (!audioContext) {
-          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-          if (!AudioContextClass) return null;
-          audioContext = new AudioContextClass();
+      function chooseStaticGlitchIndex() {
+        const count = STATIC_GLITCH_SOURCES.length;
+        if (count < 2) return 0;
+        let index = Math.floor(Math.random() * count);
+        if (index === staticGlitchAudio.previousIndex) {
+          index = (index + 1 + Math.floor(Math.random() * (count - 1))) % count;
         }
-        if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
-        return audioContext;
+        staticGlitchAudio.previousIndex = index;
+        return index;
       }
 
-      function playGlitchBurst(strength = 1) {
-        const audio = ensureAudio();
-        if (!audio) return;
-        const duration = randomBetween(.15, .25);
-        const sampleCount = Math.max(1, Math.floor(audio.sampleRate * duration));
-        const buffer = audio.createBuffer(1, sampleCount, audio.sampleRate);
-        const data = buffer.getChannelData(0);
-        let b0 = 0;
-        let b1 = 0;
-        let b2 = 0;
-        let b3 = 0;
-        let b4 = 0;
-        let b5 = 0;
-        let b6 = 0;
-        for (let i = 0; i < sampleCount; i += 1) {
-          const white = Math.random() * 2 - 1;
-          // Paul Kellet's compact pink-noise filter, mixed with white noise,
-          // keeps the burst gritty at the top while retaining body below it.
-          b0 = .99886 * b0 + white * .0555179;
-          b1 = .99332 * b1 + white * .0750759;
-          b2 = .96900 * b2 + white * .1538520;
-          b3 = .86650 * b3 + white * .3104856;
-          b4 = .55000 * b4 + white * .5329522;
-          b5 = -.7616 * b5 - white * .0168980;
-          const pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * .5362) * .11;
-          b6 = white * .115926;
-          const crackle = Math.random() > .91 ? randomSigned(.9, 1.5) : 1;
-          data[i] = (white * .63 + pink * .72) * crackle;
+      function unlockStaticGlitchAudio() {
+        const clips = preloadStaticGlitchAudio();
+        staticGlitchAudio.unlocked = clips.length === STATIC_GLITCH_SOURCES.length;
+
+        // A glitch can begin before the first gesture. Play that pending event
+        // as soon as the browser grants media playback permission.
+        if (staticGlitchAudio.unlocked && glitch.active && !glitch.audioPlayed) {
+          glitch.audioPlayed = playRandomGlitchSound();
+        }
+        return staticGlitchAudio.unlocked;
+      }
+
+      function playRandomGlitchSound() {
+        const clips = preloadStaticGlitchAudio();
+        if (!staticGlitchAudio.unlocked || clips.length !== STATIC_GLITCH_SOURCES.length) {
+          if (!staticGlitchAudio.warnedAboutAutoplay) {
+            console.warn('[CUBUS AUDIO] Static glitch playback is waiting for a user interaction.');
+            staticGlitchAudio.warnedAboutAutoplay = true;
+          }
+          return false;
         }
 
-        const source = audio.createBufferSource();
-        const bandpass = audio.createBiquadFilter();
-        const noiseGain = audio.createGain();
-        const tone = audio.createOscillator();
-        const distortion = audio.createWaveShaper();
-        const toneGain = audio.createGain();
-        const output = audio.createGain();
-        source.buffer = buffer;
-        bandpass.type = 'bandpass';
-        const now = audio.currentTime;
-        bandpass.frequency.setValueAtTime(800, now);
-        bandpass.frequency.exponentialRampToValueAtTime(4000, now + duration * .62);
-        bandpass.frequency.exponentialRampToValueAtTime(1500, now + duration);
-        bandpass.Q.setValueAtTime(6.5, now);
-
-        // Chopped micro-pulses turn the buffer into a stuttering static burst
-        // rather than one continuous noise hit.
-        const pulseCount = 8 + Math.floor(Math.random() * 6);
-        const pulseWidth = duration / pulseCount;
-        noiseGain.gain.setValueAtTime(.0001, now);
-        for (let i = 0; i < pulseCount; i += 1) {
-          const pulseStart = now + i * pulseWidth;
-          const pulseEnd = pulseStart + pulseWidth * randomBetween(.38, .86);
-          noiseGain.gain.setValueAtTime(.0001, pulseStart);
-          noiseGain.gain.exponentialRampToValueAtTime(.24 * strength, pulseStart + .0025);
-          noiseGain.gain.exponentialRampToValueAtTime(.0001, pulseEnd);
+        const index = chooseStaticGlitchIndex();
+        const clip = clips[index];
+        try {
+          // Each file owns one preloaded player. Resetting it makes repeated
+          // triggers immediate; different files can overlap independently.
+          clip.pause();
+          clip.currentTime = 0;
+          clip.volume = STATIC_GLITCH_VOLUME;
+          const playback = clip.play();
+          if (playback && typeof playback.catch === 'function') {
+            playback.catch((error) => {
+              console.warn('[CUBUS AUDIO] Static glitch playback was rejected:', {
+                asset: STATIC_GLITCH_SOURCES[index],
+                name: error && error.name,
+                message: error && error.message
+              });
+            });
+          }
+          return true;
+        } catch (error) {
+          console.warn('[CUBUS AUDIO] Static glitch playback failed:', {
+            asset: STATIC_GLITCH_SOURCES[index],
+            name: error && error.name,
+            message: error && error.message
+          });
+          return false;
         }
-        noiseGain.gain.setValueAtTime(.0001, now + duration);
-
-        // A very small distorted oscillator adds the electrical bzzzt bite.
-        tone.type = Math.random() > .5 ? 'square' : 'sawtooth';
-        tone.frequency.setValueAtTime(randomBetween(105, 190), now);
-        tone.frequency.exponentialRampToValueAtTime(randomBetween(620, 980), now + duration * .48);
-        tone.frequency.exponentialRampToValueAtTime(randomBetween(160, 280), now + duration);
-        distortion.curve = makeDistortionCurve(48);
-        distortion.oversample = '2x';
-        toneGain.gain.setValueAtTime(.0001, now);
-        toneGain.gain.exponentialRampToValueAtTime(.035 * strength, now + .01);
-        toneGain.gain.exponentialRampToValueAtTime(.0001, now + duration);
-        output.gain.setValueAtTime(.82, now);
-
-        source.connect(bandpass).connect(noiseGain).connect(output);
-        tone.connect(distortion).connect(toneGain).connect(output);
-        output.connect(audio.destination);
-        source.start(now);
-        tone.start(now);
-        source.stop(now + duration + .02);
-        tone.stop(now + duration + .02);
       }
 
       function playClickPop() {
-        const audio = ensureAudio();
-        if (!audio) return;
-        const now = audio.currentTime;
-        const oscillator = audio.createOscillator();
-        const filter = audio.createBiquadFilter();
-        const gain = audio.createGain();
-        oscillator.type = 'square';
-        oscillator.frequency.setValueAtTime(180, now);
-        oscillator.frequency.exponentialRampToValueAtTime(62, now + .075);
-        filter.type = 'highpass';
-        filter.frequency.setValueAtTime(700, now);
-        gain.gain.setValueAtTime(.0001, now);
-        gain.gain.exponentialRampToValueAtTime(.08, now + .004);
-        gain.gain.exponentialRampToValueAtTime(.0001, now + .085);
-        oscillator.connect(filter).connect(gain).connect(audio.destination);
-        oscillator.start(now);
-        oscillator.stop(now + .1);
-        playGlitchBurst(.65);
+        return playRandomGlitchSound();
       }
 
-      function startGlitch(time, sound = true) {
+      function startGlitch(time) {
         if (!glitch.enabled) return;
         glitch.active = true;
         glitch.startedAt = time;
@@ -799,22 +783,25 @@
         glitch.seed = Math.random() * 10000;
         glitch.intensity = randomBetween(.72, 1.18);
         glitch.nextAt = time + randomBetween(4000, 8000);
+        glitch.audioPlayed = false;
         triggerMasterRotationBoost(time);
-        if (sound) playGlitchBurst(glitch.intensity);
+        glitch.audioPlayed = playRandomGlitchSound();
       }
 
       function updateGlitch(time) {
         if (!glitch.enabled) {
           glitch.active = false;
           glitch.intensity = 0;
+          glitch.audioPlayed = false;
           return;
         }
-        if (!glitch.active && time >= glitch.nextAt) startGlitch(time, Boolean(audioContext));
+        if (!glitch.active && time >= glitch.nextAt) startGlitch(time);
         if (glitch.active) {
           const elapsed = time - glitch.startedAt;
           if (elapsed >= glitch.duration) {
             glitch.active = false;
             glitch.intensity = 0;
+            glitch.audioPlayed = false;
           } else {
             const envelope = Math.sin(Math.PI * elapsed / glitch.duration);
             glitch.intensity = Math.max(.1, envelope);
@@ -826,6 +813,7 @@
         glitch.enabled = false;
         glitch.active = false;
         glitch.intensity = 0;
+        glitch.audioPlayed = false;
         glitch.nextAt = Infinity;
         master.rotationBoost = null;
       }
@@ -939,7 +927,7 @@
         // the core opens, the idle glitch scheduler and rotation boost stay
         // permanently disabled so the eight destinations remain clean.
         disableGlitchAfterSplit();
-        ensureAudio();
+        unlockStaticGlitchAudio();
         playClickPop();
         app.state = 'transition';
         app.transitionStartedAt = time;
@@ -1292,6 +1280,12 @@
         };
       }
 
+      // Preload is safe before interaction; playback itself is unlocked by a
+      // real gesture so browser media policies are respected.
+      window.addEventListener('pointerdown', unlockStaticGlitchAudio, { capture: true });
+      window.addEventListener('touchstart', unlockStaticGlitchAudio, { capture: true, passive: true });
+      window.addEventListener('keydown', unlockStaticGlitchAudio, { capture: true });
+
       canvas.addEventListener('pointermove', (event) => {
         app.pointer = pointerPosition(event);
         updateHover();
@@ -1305,6 +1299,7 @@
       });
 
       canvas.addEventListener('pointerdown', (event) => {
+        unlockStaticGlitchAudio();
         app.pointer = pointerPosition(event);
         const hit = hitTest(app.pointer);
         if (hit === 'master') {
@@ -1318,6 +1313,7 @@
       });
 
       canvas.addEventListener('keydown', (event) => {
+        unlockStaticGlitchAudio();
         if ((event.key === 'Enter' || event.key === ' ') && app.state === 'idle') {
           event.preventDefault();
           beginSplit(performance.now());
@@ -1328,6 +1324,7 @@
 
       // Start only after all state exists; this also makes a resize before the
       // first frame safe.
+      preloadStaticGlitchAudio();
       resizeCanvas();
       requestAnimationFrame((time) => {
         app.lastTime = time;
