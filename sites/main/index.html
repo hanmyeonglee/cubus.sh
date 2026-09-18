@@ -9,13 +9,84 @@
 </head>
 <body class="booting">
   <canvas id="scene" tabindex="0" aria-label="Interactive three-dimensional cubus navigation"></canvas>
-  <button id="terminal-launch" class="terminal-header boot-launch" type="button" aria-label="Execute cubus.sh">
-    <span class="prompt">$</span> ./cubus.sh
-  </button>
-  <div id="boot-prompt" class="boot-prompt" aria-hidden="false">
-    <span>[ EXECUTE ]</span>
-    <span class="boot-arrow" aria-hidden="true">↓</span>
+  <div id="bulkhead" class="bulkhead" aria-label="Security bulkhead locked">
+    <section class="bulkhead-panel bulkhead-panel--top" aria-hidden="true">
+      <div class="bulkhead-panel__grid"></div>
+      <svg class="bulkhead-panel__seam-art" viewBox="0 0 1600 900" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <pattern id="bulkhead-hazard-top" width="34" height="34" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="34" height="34" fill="#090c11"></rect>
+            <rect width="15" height="34" fill="#f2ae26"></rect>
+          </pattern>
+        </defs>
+        <path class="bulkhead-seam__gasket" d="M 0 565 H 700 L 900 365 H 1600"></path>
+        <path class="bulkhead-seam__hazard" stroke="url(#bulkhead-hazard-top)" d="M 0 565 H 700 L 900 365 H 1600"></path>
+        <path class="bulkhead-seam__bevel" d="M 0 565 H 700 L 900 365 H 1600"></path>
+      </svg>
+      <div class="bulkhead-panel__bolt-field"></div>
+      <div class="bulkhead-panel__rib bulkhead-panel__rib--left"></div>
+      <div class="bulkhead-panel__rib bulkhead-panel__rib--right"></div>
+      <div class="bulkhead-panel__circuit bulkhead-panel__circuit--left"></div>
+      <div class="bulkhead-panel__circuit bulkhead-panel__circuit--right"></div>
+      <div class="bulkhead-panel__barcode bulkhead-panel__barcode--left"></div>
+      <div class="bulkhead-panel__barcode bulkhead-panel__barcode--right"></div>
+      <div class="bulkhead-panel__data bulkhead-panel__data--left">
+        <span>HYDRAULIC PRESSURE: 4200 PSI</span>
+        <span>SECTOR // 07-B</span>
+        <span>CHASSIS: TITANIUM-ALLOY</span>
+      </div>
+      <div class="bulkhead-panel__data bulkhead-panel__data--right">
+        <span>SECURITY LEVEL: MAX</span>
+        <span>LOCK BUS: NOMINAL</span>
+        <span>CORE SEAL: ARMED</span>
+      </div>
+      <span class="bulkhead-panel__stamp">SECURITY BULKHEAD // 06</span>
+      <span class="bulkhead-panel__serial">OBSIDIAN / LOCKED</span>
+    </section>
+    <section class="bulkhead-panel bulkhead-panel--bottom" aria-hidden="true">
+      <div class="bulkhead-panel__grid"></div>
+      <svg class="bulkhead-panel__seam-art" viewBox="0 0 1600 900" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <pattern id="bulkhead-hazard-bottom" width="34" height="34" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="34" height="34" fill="#090c11"></rect>
+            <rect width="15" height="34" fill="#f2ae26"></rect>
+          </pattern>
+        </defs>
+        <path class="bulkhead-seam__gasket" d="M 0 565 H 700 L 900 365 H 1600"></path>
+        <path class="bulkhead-seam__hazard" stroke="url(#bulkhead-hazard-bottom)" d="M 0 565 H 700 L 900 365 H 1600"></path>
+        <path class="bulkhead-seam__bevel" d="M 0 565 H 700 L 900 365 H 1600"></path>
+      </svg>
+      <div class="bulkhead-panel__bolt-field"></div>
+      <div class="bulkhead-panel__rib bulkhead-panel__rib--left"></div>
+      <div class="bulkhead-panel__rib bulkhead-panel__rib--right"></div>
+      <div class="bulkhead-panel__circuit bulkhead-panel__circuit--left"></div>
+      <div class="bulkhead-panel__circuit bulkhead-panel__circuit--right"></div>
+      <div class="bulkhead-panel__barcode bulkhead-panel__barcode--left"></div>
+      <div class="bulkhead-panel__barcode bulkhead-panel__barcode--right"></div>
+      <div class="bulkhead-panel__data bulkhead-panel__data--left">
+        <span>HYDRAULIC RETURN: STANDBY</span>
+        <span>SECTOR // 07-B</span>
+        <span>CHASSIS: TITANIUM-ALLOY</span>
+      </div>
+      <div class="bulkhead-panel__data bulkhead-panel__data--right">
+        <span>SECURITY LEVEL: MAX</span>
+        <span>SEAL ARRAY: 12 / 12</span>
+        <span>ACCESS VECTOR: NULL</span>
+      </div>
+      <span class="bulkhead-panel__stamp">UNAUTHORIZED ACCESS PROHIBITED</span>
+      <span class="bulkhead-panel__serial">SEAL / 00-AX17</span>
+    </section>
   </div>
+  <div class="terminal-header terminal-header--fixed" aria-label="cubus.sh terminal label">
+    <span class="prompt">$</span><span class="terminal-header__path">&nbsp;./cubus.sh</span>
+  </div>
+  <button id="terminal-launch" class="boot-launch" type="button" aria-label="Unlock security bulkhead">
+    <span class="dial-ring dial-ring--outer" aria-hidden="true"></span>
+    <span class="dial-ring dial-ring--middle" aria-hidden="true"></span>
+    <span class="dial-ring dial-ring--inner" aria-hidden="true"></span>
+    <span class="dial-lock" aria-hidden="true"></span>
+    <span class="dial-flare" aria-hidden="true"></span>
+  </button>
   <div class="corner-mark">SYS / DIMENSIONAL-01</div>
   <div class="hud"><span class="accent" id="mode">CORE ONLINE</span><br><span id="hint">CLICK THE CUBE TO SPLIT</span></div>
 

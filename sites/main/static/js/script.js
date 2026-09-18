@@ -4,7 +4,7 @@
   const canvas = document.getElementById('scene');
   const ctx = canvas.getContext('2d', { alpha: false });
   const terminalLaunch = document.getElementById('terminal-launch');
-  const bootPrompt = document.getElementById('boot-prompt');
+  const bulkhead = document.getElementById('bulkhead');
   const modeReadout = document.getElementById('mode');
   const hintReadout = document.getElementById('hint');
 
@@ -727,6 +727,83 @@
     warnedAboutAutoplay: false
   };
 
+  // Asset paths are intentionally empty until the final sound design is supplied.
+  // They can be populated without changing the sequence through window.cubusIntroAudio.configure().
+  const INTRO_AUDIO_CUES = {
+    lockClick: { source: '', at: 0, volume: .82 },
+    neonFlare: { source: '', at: 120, volume: .58 },
+    hydraulicOpen: { source: '', at: 400, volume: .74 }
+  };
+  const introAudio = {
+    clips: new Map(),
+    unlocked: false,
+    warnedAboutAutoplay: false
+  };
+
+  function preloadIntroAudioCue(name) {
+    const cue = INTRO_AUDIO_CUES[name];
+    if (!cue || !cue.source || typeof window.Audio !== 'function') return null;
+    const existing = introAudio.clips.get(name);
+    if (existing && existing.src === new URL(cue.source, window.location.href).href) return existing;
+
+    const clip = new window.Audio();
+    clip.preload = 'auto';
+    clip.src = cue.source;
+    clip.volume = cue.volume;
+    clip.playsInline = true;
+    clip.load();
+    introAudio.clips.set(name, clip);
+    return clip;
+  }
+
+  function unlockIntroAudio() {
+    introAudio.unlocked = true;
+    for (const name of Object.keys(INTRO_AUDIO_CUES)) preloadIntroAudioCue(name);
+  }
+
+  function playIntroCue(name) {
+    const cue = INTRO_AUDIO_CUES[name];
+    const clip = preloadIntroAudioCue(name);
+    if (!cue || !clip) return false;
+    if (!introAudio.unlocked) {
+      if (!introAudio.warnedAboutAutoplay) {
+        console.warn('[CUBUS AUDIO] Intro cue playback is waiting for a user interaction.');
+        introAudio.warnedAboutAutoplay = true;
+      }
+      return false;
+    }
+
+    try {
+      clip.pause();
+      clip.currentTime = 0;
+      clip.volume = cue.volume;
+      const playback = clip.play();
+      if (playback && typeof playback.catch === 'function') {
+        playback.catch((error) => {
+          console.warn('[CUBUS AUDIO] Intro cue playback was rejected:', { name, source: cue.source, error });
+        });
+      }
+      return true;
+    } catch (error) {
+      console.warn('[CUBUS AUDIO] Intro cue playback failed:', { name, source: cue.source, error });
+      return false;
+    }
+  }
+
+  function configureIntroAudio(sources = {}) {
+    for (const [name, source] of Object.entries(sources)) {
+      if (!INTRO_AUDIO_CUES[name] || typeof source !== 'string') continue;
+      INTRO_AUDIO_CUES[name].source = source;
+      introAudio.clips.delete(name);
+      preloadIntroAudioCue(name);
+    }
+  }
+
+  window.cubusIntroAudio = Object.freeze({
+    configure: configureIntroAudio,
+    cues: INTRO_AUDIO_CUES
+  });
+
   function preloadStaticGlitchAudio() {
     if (staticGlitchAudio.preloaded) return staticGlitchAudio.clips;
     if (typeof window.Audio !== 'function') {
@@ -868,7 +945,7 @@
   };
 
   const app = {
-    state: 'boot',
+    state: 'locked',
     transitionStartedAt: 0,
     transitionDuration: 1720,
     hexOpacity: 1,
@@ -878,12 +955,13 @@
     lastTime: performance.now(),
   };
 
-  const bootSequence = {
+  const introSequence = {
     startedAt: 0,
-    duration: 300,
-    seed: 0,
-    buffer: null,
-    bufferContext: null
+    authDuration: 300,
+    doorStartAt: 400,
+    doorDuration: 800,
+    completed: false,
+    cuesPlayed: new Set()
   };
   let isBooted = false;
 
@@ -1059,113 +1137,52 @@
     master.hoverScale = lerp(master.hoverScale, targetScale, hoverSmoothing);
   }
 
-  function updateBootSequence(time) {
-    const progress = clamp((time - bootSequence.startedAt) / bootSequence.duration, 0, 1);
-    if (progress < 1) return;
+  function fireIntroCue(name) {
+    if (introSequence.cuesPlayed.has(name)) return;
+    introSequence.cuesPlayed.add(name);
+    playIntroCue(name);
+  }
+
+  function updateIntroSequence(time) {
+    if (app.state !== 'unlocking' || introSequence.completed) return;
+    const elapsed = time - introSequence.startedAt;
+
+    if (elapsed >= INTRO_AUDIO_CUES.neonFlare.at) fireIntroCue('neonFlare');
+    if (elapsed >= introSequence.authDuration) {
+      terminalLaunch.classList.remove('is-authenticating');
+      terminalLaunch.classList.add('is-releasing');
+    }
+    if (elapsed >= introSequence.doorStartAt) {
+      bulkhead.classList.add('is-opening');
+      fireIntroCue('hydraulicOpen');
+    }
+    if (elapsed < introSequence.doorStartAt + introSequence.doorDuration + 40) return;
+
+    introSequence.completed = true;
     isBooted = true;
     app.state = 'idle';
     glitch.nextAt = time + randomBetween(4000, 8000);
     document.body.classList.remove('booting');
-    canvas.style.transform = '';
+    bulkhead.setAttribute('aria-hidden', 'true');
+    bulkhead.hidden = true;
+    canvas.classList.add('is-visible');
   }
 
-  function beginBootSequence(time) {
-    if (isBooted || app.state !== 'boot') return;
-    bootSequence.startedAt = time;
-    bootSequence.duration = randomBetween(240, 330);
-    bootSequence.seed = Math.random() * 10000;
-    app.state = 'booting';
-    terminalLaunch.classList.add('is-docking');
+  function beginBulkheadSequence(time) {
+    if (isBooted || app.state !== 'locked') return;
+    introSequence.startedAt = time;
+    introSequence.completed = false;
+    introSequence.cuesPlayed.clear();
+    app.state = 'unlocking';
+    terminalLaunch.classList.add('is-authenticating');
     terminalLaunch.setAttribute('aria-disabled', 'true');
-    bootPrompt.classList.add('is-hidden');
-    bootPrompt.setAttribute('aria-hidden', 'true');
-    canvas.classList.add('is-visible');
+    terminalLaunch.blur();
+    bulkhead.classList.add('is-authenticating');
+    bulkhead.setAttribute('aria-label', 'Security bulkhead unlocking');
 
     unlockStaticGlitchAudio();
-    playClickPop();
-
-    app.lastTime = time;
-    requestAnimationFrame(frame);
-  }
-
-  function ensureBootGlitchBuffer() {
-    if (bootSequence.buffer &&
-        bootSequence.buffer.width === canvas.width &&
-        bootSequence.buffer.height === canvas.height) {
-      return Boolean(bootSequence.bufferContext);
-    }
-
-    bootSequence.buffer = document.createElement('canvas');
-    bootSequence.buffer.width = canvas.width;
-    bootSequence.buffer.height = canvas.height;
-    bootSequence.bufferContext = bootSequence.buffer.getContext('2d');
-    return Boolean(bootSequence.bufferContext);
-  }
-
-  function drawBootGlitch(time) {
-    const progress = clamp((time - bootSequence.startedAt) / bootSequence.duration, 0, 1);
-    const pulse = Math.sin(Math.PI * progress);
-    if (pulse < .01) {
-      canvas.style.transform = '';
-      return;
-    }
-
-    const frameSeed = bootSequence.seed + Math.floor(time / 16.6667);
-    const shakeX = hashNoise(frameSeed + 12) * 10 * pulse;
-    const shakeY = hashNoise(frameSeed + 37) * 7 * pulse;
-    canvas.style.transform = `translate(${shakeX.toFixed(2)}px, ${shakeY.toFixed(2)}px)`;
-
-    if (!ensureBootGlitchBuffer()) return;
-    const bufferContext = bootSequence.bufferContext;
-    const width = canvas.width;
-    const height = canvas.height;
-    const dpr = viewport.dpr;
-
-    bufferContext.setTransform(1, 0, 0, 1, 0, 0);
-    bufferContext.clearRect(0, 0, width, height);
-    bufferContext.drawImage(canvas, 0, 0);
-
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-
-    const channelOffset = Math.round((5 + 9 * pulse) * dpr);
-    ctx.globalCompositeOperation = 'screen';
-    ctx.globalAlpha = .3 * pulse;
-    ctx.filter = `contrast(${1.35 + pulse * .8}) saturate(4) hue-rotate(145deg)`;
-    ctx.drawImage(bootSequence.buffer, channelOffset, 0);
-    ctx.filter = `contrast(${1.35 + pulse * .8}) saturate(5) hue-rotate(295deg)`;
-    ctx.drawImage(bootSequence.buffer, -channelOffset, 0);
-    ctx.filter = 'none';
-
-    const sliceCount = 10 + Math.floor(pulse * 8);
-    for (let i = 0; i < sliceCount; i += 1) {
-      const sliceY = Math.floor(((i + .5) / sliceCount) * height);
-      const sliceHeight = Math.max(2, Math.floor((2 + Math.abs(hashNoise(frameSeed + i * 2.7)) * 7) * dpr));
-      const displacement = Math.round(hashNoise(frameSeed + 90 + i * 4.1) * (12 + pulse * 28) * dpr);
-      const sourceY = clamp(sliceY - Math.floor(sliceHeight / 2), 0, height - sliceHeight);
-      const tint = i % 2 ? 'rgba(255, 43, 181, .22)' : 'rgba(0, 240, 255, .24)';
-
-      ctx.globalCompositeOperation = 'screen';
-      ctx.globalAlpha = (.22 + Math.abs(hashNoise(frameSeed + i)) * .2) * pulse;
-      ctx.drawImage(
-        bootSequence.buffer,
-        0, sourceY, width, sliceHeight,
-        displacement, sourceY, width, sliceHeight
-      );
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = .72 * pulse;
-      ctx.fillStyle = tint;
-      ctx.fillRect(0, sourceY, width, Math.max(1, Math.ceil(dpr)));
-    }
-
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.globalAlpha = .09 * pulse;
-    ctx.fillStyle = 'rgba(0, 240, 255, .9)';
-    const lineStep = Math.max(3, Math.round(5 * dpr));
-    for (let y = 0; y < height; y += lineStep) {
-      ctx.fillRect(0, y, width, Math.max(1, Math.round(dpr * .42)));
-    }
-    ctx.restore();
+    unlockIntroAudio();
+    fireIntroCue('lockClick');
   }
 
   function updateMinis(dt, time) {
@@ -1353,23 +1370,6 @@
     });
   }
 
-  function renderBootSequence(time) {
-    const progress = clamp((time - bootSequence.startedAt) / bootSequence.duration, 0, 1);
-    const reveal = easeOutCubic(clamp((progress - .08) / .68, 0, 1));
-
-    drawBackground(time);
-    if (reveal > .001) {
-      ctx.save();
-      ctx.globalAlpha = reveal;
-      drawOrbitingBytes(time, 1);
-      renderMaster(time);
-      ctx.restore();
-    } else {
-      master.hit = null;
-    }
-    drawBootGlitch(time);
-  }
-
   function renderMini(mini, time) {
     const hovered = mini.hovered;
     const glitchActive = glitch.active;
@@ -1410,9 +1410,9 @@
 
   function render(time) {
     drawBackground(time);
-    updateGlitch(time);
 
-    if (app.state === 'idle') {
+    if (app.state === 'locked' || app.state === 'unlocking' || app.state === 'idle') {
+      if (app.state === 'idle') updateGlitch(time);
       drawOrbitingBytes(time, app.hexOpacity);
       renderMaster(time);
     } else {
@@ -1433,11 +1433,11 @@
     const dt = elapsed / 1000;
     app.lastTime = time;
 
-    const booting = app.state === 'booting';
-    if (booting) {
+    const introActive = app.state === 'locked' || app.state === 'unlocking';
+    if (introActive) {
       updateMaster(dt, time);
-      updateBootSequence(time);
-      renderBootSequence(time);
+      updateIntroSequence(time);
+      render(time);
     } else {
       if (app.state === 'idle') updateMaster(dt, time);
       if (app.state === 'grid') updateMinis(dt, time);
@@ -1454,18 +1454,23 @@
     };
   }
 
-  window.addEventListener('pointerdown', unlockStaticGlitchAudio, { capture: true });
-  window.addEventListener('touchstart', unlockStaticGlitchAudio, { capture: true, passive: true });
-  window.addEventListener('keydown', (event) => {
+  function unlockAllAudio() {
     unlockStaticGlitchAudio();
-    if (!isBooted && app.state === 'boot' && (event.key === 'Enter' || event.key === ' ')) {
+    unlockIntroAudio();
+  }
+
+  window.addEventListener('pointerdown', unlockAllAudio, { capture: true });
+  window.addEventListener('touchstart', unlockAllAudio, { capture: true, passive: true });
+  window.addEventListener('keydown', (event) => {
+    unlockAllAudio();
+    if (!isBooted && app.state === 'locked' && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
-      beginBootSequence(performance.now());
+      beginBulkheadSequence(performance.now());
     }
   }, { capture: true });
 
   terminalLaunch.addEventListener('click', () => {
-    beginBootSequence(performance.now());
+    beginBulkheadSequence(performance.now());
   });
 
   canvas.addEventListener('pointermove', (event) => {
@@ -1482,7 +1487,7 @@
   });
 
   canvas.addEventListener('pointerdown', (event) => {
-    unlockStaticGlitchAudio();
+    unlockAllAudio();
     app.pointer = pointerPosition(event);
     const hit = hitTest(app.pointer);
     if (hit === 'master') {
@@ -1496,7 +1501,7 @@
   });
 
   canvas.addEventListener('keydown', (event) => {
-    unlockStaticGlitchAudio();
+    unlockAllAudio();
     if ((event.key === 'Enter' || event.key === ' ') && app.state === 'idle') {
       event.preventDefault();
       beginSplit(performance.now());
@@ -1507,4 +1512,5 @@
 
   preloadStaticGlitchAudio();
   resizeCanvas();
+  requestAnimationFrame(frame);
 })();
