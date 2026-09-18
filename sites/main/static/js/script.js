@@ -11,9 +11,7 @@
   const TAU = Math.PI * 2;
   const CAMERA_Z = 7.8;
   const CAMERA_FOCAL = 6.7;
-  const MASTER_HALF = .8;
   const MINI_GRID_HALF = .34 * .85;
-  const MINI_CLUSTER_HALF = MASTER_HALF * .5;
   const RETICLE_SIZE = 96;
   const FACE_ARROW_GAP = .26;
   const FACE_ARROW_REACH = .70;
@@ -39,34 +37,16 @@
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const lerp = (a, b, t) => a + (b - a) * t;
-  const blendHexColor = (from, to, amount) => {
-    const parse = (hex) => [
-      parseInt(hex.slice(1, 3), 16),
-      parseInt(hex.slice(3, 5), 16),
-      parseInt(hex.slice(5, 7), 16)
-    ];
-    const a = parse(from);
-    const b = parse(to);
-    const t = clamp(amount, 0, 1);
-    return `rgb(${Math.round(lerp(a[0], b[0], t))}, ${Math.round(lerp(a[1], b[1], t))}, ${Math.round(lerp(a[2], b[2], t))})`;
-  };
   const easeInOutCubic = (t) => {
     t = clamp(t, 0, 1);
     return t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
   };
-  const easeOutCubic = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
   const randomBetween = (min, max) => min + Math.random() * (max - min);
   const randomSigned = (min, max) => randomBetween(min, max) * (Math.random() < .5 ? -1 : 1);
-  const wrapAngle = (angle) => {
-    while (angle > Math.PI) angle -= TAU;
-    while (angle < -Math.PI) angle += TAU;
-    return angle;
-  };
 
   const vec = (x = 0, y = 0, z = 0) => ({ x, y, z });
   const add = (a, b) => vec(a.x + b.x, a.y + b.y, a.z + b.z);
   const scaleVec = (a, scalar) => vec(a.x * scalar, a.y * scalar, a.z * scalar);
-  const lerpVec = (a, b, t) => vec(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t));
   const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
   const length = (a) => Math.sqrt(dot(a, a));
   const normalize = (a) => {
@@ -74,8 +54,6 @@
     return scaleVec(a, 1 / len);
   };
   const cloneVec = (a) => vec(a.x, a.y, a.z);
-  const cloneAngles = (a) => ({ x: a.x, y: a.y, z: a.z });
-  const approachAngle = (from, to, amount) => from + wrapAngle(to - from) * amount;
 
   function createRotationCache(rotation) {
     return {
@@ -107,10 +85,6 @@
     z = pitchedZ;
 
     return vec(x, y, z);
-  }
-
-  function rotatePoint(point, rotation) {
-    return rotatePointCached(point, createRotationCache(rotation));
   }
 
   function hashNoise(seed) {
@@ -172,9 +146,7 @@
     backgroundCache.height = 0;
     backgroundCache.dpr = 0;
     rebuildBackgroundCache();
-    if (app.state === 'grid' || app.state === 'transition') {
-      updateGridTargets();
-    }
+    if (app.minis.length) updateGridTargets();
   }
 
   function worldToScreen(point) {
@@ -567,139 +539,6 @@
     return { left, right, top, bottom };
   }
 
-  const orbitingBytes = Array.from({ length: 12 }, (_, index) => ({
-    value: `0x${Math.floor(Math.random() * 256).toString(16).padStart(2, '0').toUpperCase()}`,
-    orbit: randomBetween(0, TAU),
-    radius: randomBetween(1.65, 2.55),
-    height: randomBetween(-1.35, 1.35),
-    size: randomBetween(8.5, 13.5),
-    speed: randomBetween(.045, .095) * (index % 2 ? -1 : 1),
-    spin: randomBetween(-.45, .45),
-    phase: randomBetween(0, TAU),
-    opacity: randomBetween(.55, 1)
-  }));
-
-  const DIGITAL_SEGMENTS = {
-    '0': ['a', 'b', 'c', 'd', 'e', 'f'],
-    '1': ['b', 'c'],
-    '2': ['a', 'b', 'd', 'e', 'g'],
-    '3': ['a', 'b', 'c', 'd', 'g'],
-    '4': ['b', 'c', 'f', 'g'],
-    '5': ['a', 'c', 'd', 'f', 'g'],
-    '6': ['a', 'c', 'd', 'e', 'f', 'g'],
-    '7': ['a', 'b', 'c'],
-    '8': ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
-    '9': ['a', 'b', 'c', 'd', 'f', 'g'],
-    A: ['a', 'b', 'c', 'e', 'f', 'g'],
-    B: ['c', 'd', 'e', 'f', 'g'],
-    C: ['a', 'd', 'e', 'f'],
-    D: ['b', 'c', 'd', 'e', 'g'],
-    E: ['a', 'd', 'e', 'f', 'g'],
-    F: ['a', 'e', 'f', 'g'],
-    x: ['x']
-  };
-
-  const DIGITAL_PATH_SIZE_STEP = .125;
-  const DIGITAL_PATH_CACHE_LIMIT = 768;
-  const digitalBytePathCache = new Map();
-
-  function addDigitalSegment(path, segment, left, width, top, bottom, inset) {
-    const mid = (top + bottom) / 2;
-    const addLine = (x1, y1, x2, y2) => {
-      path.moveTo(x1, y1);
-      path.lineTo(x2, y2);
-    };
-
-    if (segment === 'a') addLine(left + inset, top + inset, left + width - inset, top + inset);
-    else if (segment === 'b') addLine(left + width - inset, top + inset, left + width - inset, mid - inset);
-    else if (segment === 'c') addLine(left + width - inset, mid + inset, left + width - inset, bottom - inset);
-    else if (segment === 'd') addLine(left + inset, bottom - inset, left + width - inset, bottom - inset);
-    else if (segment === 'e') addLine(left + inset, mid + inset, left + inset, bottom - inset);
-    else if (segment === 'f') addLine(left + inset, top + inset, left + inset, mid - inset);
-    else if (segment === 'g') addLine(left + inset, mid, left + width - inset, mid);
-    else if (segment === 'x') {
-      addLine(left + inset, top + inset, left + width - inset, bottom - inset);
-      addLine(left + width - inset, top + inset, left + inset, bottom - inset);
-    }
-  }
-
-  function buildDigitalBytePath(value, size) {
-    const height = size;
-    const width = size * .56;
-    const thickness = Math.max(.8, size * .095);
-    const gap = size * .14;
-    const totalWidth = value.length * width + (value.length - 1) * gap;
-    const top = -height / 2;
-    const bottom = top + height;
-    const firstLeft = -totalWidth / 2;
-    const inset = thickness * .55;
-    const path = new Path2D();
-
-    for (let index = 0; index < value.length; index += 1) {
-      const left = firstLeft + index * (width + gap);
-      for (const segment of DIGITAL_SEGMENTS[value[index]] || []) {
-        addDigitalSegment(path, segment, left, width, top, bottom, inset);
-      }
-    }
-    return path;
-  }
-
-  function getDigitalBytePath(value, size) {
-    const sizeBucket = Math.round(size / DIGITAL_PATH_SIZE_STEP);
-    const key = `${value}:${sizeBucket}`;
-    let path = digitalBytePathCache.get(key);
-    if (path) return path;
-    if (digitalBytePathCache.size >= DIGITAL_PATH_CACHE_LIMIT) digitalBytePathCache.clear();
-    path = buildDigitalBytePath(value, sizeBucket * DIGITAL_PATH_SIZE_STEP);
-    digitalBytePathCache.set(key, path);
-    return path;
-  }
-
-  function drawDigitalByte(value, size) {
-    const thickness = Math.max(.8, size * .095);
-
-    ctx.save();
-    ctx.strokeStyle = SIGNAL_COLOR;
-    ctx.lineWidth = thickness;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.shadowColor = SIGNAL_COLOR;
-    ctx.shadowBlur = Math.max(3, size * .72);
-    ctx.stroke(getDigitalBytePath(value, size));
-    ctx.restore();
-  }
-
-  function orbitingByteWorldPosition(particle, time) {
-    const orbit = particle.orbit + time * .00012 * particle.speed * 12;
-    const vertical = particle.height + Math.sin(time * .00055 + particle.phase) * .16;
-    return vec(
-      Math.cos(orbit) * particle.radius,
-      vertical,
-      Math.sin(orbit) * particle.radius * .68
-    );
-  }
-
-  function drawOrbitingBytes(time, opacity) {
-    if (opacity <= .001) return;
-    ctx.save();
-    for (const particle of orbitingBytes) {
-      const world = orbitingByteWorldPosition(particle, time);
-      const center = worldToScreen(world);
-      const depthScale = CAMERA_FOCAL / Math.max(.8, CAMERA_Z - world.z);
-      const fontSize = clamp(particle.size * depthScale * (viewport.scale / 240), 7, 14);
-      const particleOpacity = opacity * particle.opacity * clamp(.72 + depthScale * .18, .72, 1);
-      const rotation = particle.phase + time * .0004 * particle.spin;
-
-      ctx.globalAlpha = particleOpacity;
-      ctx.save();
-      ctx.translate(center.x, center.y);
-      ctx.rotate(rotation);
-      drawDigitalByte(particle.value, fontSize);
-      ctx.restore();
-    }
-    ctx.restore();
-  }
-
   const glitch = {
     enabled: true,
     active: false,
@@ -883,10 +722,6 @@
     }
   }
 
-  function playClickPop() {
-    return playRandomGlitchSound();
-  }
-
   function startGlitch(time) {
     if (!glitch.enabled) return;
     glitch.active = true;
@@ -896,7 +731,7 @@
     glitch.intensity = randomBetween(.72, 1.18);
     glitch.nextAt = time + randomBetween(4000, 8000);
     glitch.audioPlayed = false;
-    triggerMasterRotationBoost(time);
+    triggerMiniRotationBoost(time);
     glitch.audioPlayed = playRandomGlitchSound();
   }
 
@@ -921,34 +756,9 @@
     }
   }
 
-  function disableGlitchAfterSplit() {
-    glitch.enabled = false;
-    glitch.active = false;
-    glitch.intensity = 0;
-    glitch.audioPlayed = false;
-    glitch.nextAt = Infinity;
-    master.rotationBoost = null;
-  }
-
-  const master = {
-    position: vec(0, 0, 0),
-    half: MASTER_HALF,
-    rotation: { x: .37, y: -.55, z: .18 },
-    velocity: { x: .12, y: .22, z: -.075 },
-    velocityTarget: { x: .12, y: .22, z: -.075 },
-    rotationBoost: null,
-    driftAt: randomBetween(3000, 5000),
-    hit: null,
-    hovered: false,
-    hoverScale: 1,
-    hoverStrength: 0
-  };
-
   const app = {
     state: 'locked',
-    transitionStartedAt: 0,
-    transitionDuration: 1720,
-    hexOpacity: 1,
+    interactionEnabled: false,
     hoveredIndex: -1,
     pointer: { x: -9999, y: -9999 },
     minis: [],
@@ -965,28 +775,12 @@
   };
   let isBooted = false;
 
-  function triggerMasterRotationBoost(time) {
-    const base = {
-      x: randomSigned(.14, .27),
-      y: randomSigned(.24, .43),
-      z: randomSigned(.08, .17)
-    };
-    const burst = {
-      x: Math.sign(base.x) * (Math.abs(base.x) + randomBetween(.28, .5)),
-      y: Math.sign(base.y) * (Math.abs(base.y) + randomBetween(.42, .72)),
-      z: Math.sign(base.z) * (Math.abs(base.z) + randomBetween(.16, .3))
-    };
-    master.velocityTarget = base;
-    master.velocity = burst;
-    master.rotationBoost = {
-      startedAt: time,
-      duration: randomBetween(1200, 1800),
-      burstVelocity: burst
-    };
-    master.driftAt = time + randomBetween(3000, 5000);
-  }
-
   function makeMiniCube(index, column, row, depth) {
+    const velocityTarget = {
+      x: randomSigned(.026, .062),
+      y: randomSigned(.038, .082),
+      z: randomSigned(.02, .052)
+    };
     return {
       index,
       column,
@@ -994,23 +788,17 @@
       depth,
       label: navItems[index].label,
       href: navItems[index].href,
-      startPosition: vec(),
       targetPosition: vec(),
       position: vec(),
-      half: MINI_CLUSTER_HALF,
-      rotation: cloneAngles(master.rotation),
-      startRotation: cloneAngles(master.rotation),
-      targetRotation: {
-        x: master.rotation.x + randomBetween(-.26, .26),
-        y: master.rotation.y + randomBetween(-.42, .42),
-        z: master.rotation.z + randomBetween(-.2, .2)
+      half: MINI_GRID_HALF,
+      rotation: {
+        x: randomBetween(-.72, .72),
+        y: randomBetween(-1.05, 1.05),
+        z: randomBetween(-.44, .44)
       },
-      velocity: {
-        x: randomBetween(-.055, .055),
-        y: randomBetween(-.07, .07),
-        z: randomBetween(-.045, .045)
-      },
-      wobble: randomBetween(0, TAU),
+      velocity: { ...velocityTarget },
+      velocityTarget,
+      rotationBoost: null,
       hit: null,
       hovered: false
     };
@@ -1039,102 +827,24 @@
     for (const mini of app.minis) {
       const anchor = gridScreenAnchor(mini.column, mini.row);
       mini.targetPosition = screenToWorld(anchor.x, anchor.y, mini.depth);
+      mini.position = cloneVec(mini.targetPosition);
     }
   }
 
-  function beginSplit(time) {
-    if (app.state !== 'idle') return;
-
-    disableGlitchAfterSplit();
-    unlockStaticGlitchAudio();
-    playClickPop();
-    app.state = 'transition';
-    app.transitionStartedAt = time;
-    app.hexOpacity = 1;
-    app.hoveredIndex = -1;
-    master.hit = null;
-    master.hovered = false;
-    master.hoverScale = 1;
-    master.hoverStrength = 0;
-    buildMinis();
-
+  function triggerMiniRotationBoost(time) {
     for (const mini of app.minis) {
-      const offset = vec(
-        mini.column % 2 ? MINI_CLUSTER_HALF : -MINI_CLUSTER_HALF,
-        mini.row ? -MINI_CLUSTER_HALF : MINI_CLUSTER_HALF,
-        Math.floor(mini.column / 2) ? MINI_CLUSTER_HALF : -MINI_CLUSTER_HALF
-      );
-      mini.startPosition = add(master.position, rotatePoint(offset, master.rotation));
-      mini.position = cloneVec(mini.startPosition);
-      mini.startRotation = cloneAngles(master.rotation);
-      mini.rotation = cloneAngles(master.rotation);
-    }
-    updateGridTargets();
-    modeReadout.textContent = 'SPLIT SEQUENCE';
-    hintReadout.textContent = 'DIMENSIONS UNLOCKING';
-  }
-
-  function updateTransition(time) {
-    const raw = clamp((time - app.transitionStartedAt) / app.transitionDuration, 0, 1);
-    const motion = easeInOutCubic(raw);
-    app.hexOpacity = 1 - easeOutCubic(clamp(raw / .42, 0, 1));
-
-    for (const mini of app.minis) {
-      mini.position = lerpVec(mini.startPosition, mini.targetPosition, motion);
-      mini.half = lerp(MINI_CLUSTER_HALF, MINI_GRID_HALF, easeOutCubic(clamp(raw / .78, 0, 1)));
-      mini.rotation = {
-        x: approachAngle(mini.startRotation.x, mini.targetRotation.x, motion),
-        y: approachAngle(mini.startRotation.y, mini.targetRotation.y, motion),
-        z: approachAngle(mini.startRotation.z, mini.targetRotation.z, motion)
+      const burstVelocity = {
+        x: randomSigned(.38, .82),
+        y: randomSigned(.5, .98),
+        z: randomSigned(.25, .64)
+      };
+      mini.velocity = { ...burstVelocity };
+      mini.rotationBoost = {
+        startedAt: time,
+        duration: randomBetween(1050, 1650),
+        burstVelocity
       };
     }
-
-    if (raw >= 1) {
-      app.state = 'grid';
-      app.hexOpacity = 0;
-      for (const mini of app.minis) {
-        mini.position = cloneVec(mini.targetPosition);
-        mini.half = MINI_GRID_HALF;
-      }
-      modeReadout.textContent = 'GRID ONLINE';
-      hintReadout.textContent = 'SELECT A DIMENSION';
-    }
-  }
-
-  function updateMaster(dt, time) {
-    if (time >= master.driftAt) {
-      master.velocityTarget = {
-        x: randomBetween(-.19, .19),
-        y: randomBetween(-.28, .28),
-        z: randomBetween(-.12, .12)
-      };
-      master.driftAt = time + randomBetween(3000, 5000);
-    }
-    let targetVelocity = master.velocityTarget;
-    if (master.rotationBoost) {
-      const progress = clamp((time - master.rotationBoost.startedAt) / master.rotationBoost.duration, 0, 1);
-      const decay = 1 - easeInOutCubic(progress);
-      targetVelocity = {
-        x: lerp(master.velocityTarget.x, master.rotationBoost.burstVelocity.x, decay),
-        y: lerp(master.velocityTarget.y, master.rotationBoost.burstVelocity.y, decay),
-        z: lerp(master.velocityTarget.z, master.rotationBoost.burstVelocity.z, decay)
-      };
-      if (progress >= 1) master.rotationBoost = null;
-    }
-    const smoothing = 1 - Math.pow(.002, dt);
-    master.velocity.x = lerp(master.velocity.x, targetVelocity.x, smoothing);
-    master.velocity.y = lerp(master.velocity.y, targetVelocity.y, smoothing);
-    master.velocity.z = lerp(master.velocity.z, targetVelocity.z, smoothing);
-    master.rotation.x += master.velocity.x * dt;
-    master.rotation.y += master.velocity.y * dt;
-    master.rotation.z += master.velocity.z * dt;
-
-    const targetHover = master.hovered ? 1 : 0;
-
-    const hoverSmoothing = 1 - Math.pow(.001, dt / .24);
-    master.hoverStrength = lerp(master.hoverStrength, targetHover, hoverSmoothing);
-    const targetScale = 1 + targetHover * .1;
-    master.hoverScale = lerp(master.hoverScale, targetScale, hoverSmoothing);
   }
 
   function fireIntroCue(name) {
@@ -1154,18 +864,21 @@
     }
     if (elapsed >= introSequence.doorStartAt) {
       bulkhead.classList.add('is-opening');
+      app.interactionEnabled = true;
+      canvas.classList.add('is-visible');
       fireIntroCue('hydraulicOpen');
     }
     if (elapsed < introSequence.doorStartAt + introSequence.doorDuration + 40) return;
 
     introSequence.completed = true;
     isBooted = true;
-    app.state = 'idle';
+    app.state = 'grid';
     glitch.nextAt = time + randomBetween(4000, 8000);
+    modeReadout.textContent = 'GRID ONLINE';
+    hintReadout.textContent = 'SELECT A DIMENSION';
     document.body.classList.remove('booting');
     bulkhead.setAttribute('aria-hidden', 'true');
     bulkhead.hidden = true;
-    canvas.classList.add('is-visible');
   }
 
   function beginBulkheadSequence(time) {
@@ -1188,10 +901,24 @@
   function updateMinis(dt, time) {
     for (const mini of app.minis) {
       const speed = app.hoveredIndex === mini.index ? 1.12 : 1;
+      let targetVelocity = mini.velocityTarget;
+      if (mini.rotationBoost) {
+        const progress = clamp((time - mini.rotationBoost.startedAt) / mini.rotationBoost.duration, 0, 1);
+        const decay = 1 - easeInOutCubic(progress);
+        targetVelocity = {
+          x: lerp(mini.velocityTarget.x, mini.rotationBoost.burstVelocity.x, decay),
+          y: lerp(mini.velocityTarget.y, mini.rotationBoost.burstVelocity.y, decay),
+          z: lerp(mini.velocityTarget.z, mini.rotationBoost.burstVelocity.z, decay)
+        };
+        if (progress >= 1) mini.rotationBoost = null;
+      }
+      const smoothing = 1 - Math.pow(.002, dt);
+      mini.velocity.x = lerp(mini.velocity.x, targetVelocity.x, smoothing);
+      mini.velocity.y = lerp(mini.velocity.y, targetVelocity.y, smoothing);
+      mini.velocity.z = lerp(mini.velocity.z, targetVelocity.z, smoothing);
       mini.rotation.x += mini.velocity.x * dt * speed;
       mini.rotation.y += mini.velocity.y * dt * speed;
       mini.rotation.z += mini.velocity.z * dt * speed;
-      mini.position.y += Math.sin(time * .0007 + mini.wobble) * .00065 * dt;
     }
   }
 
@@ -1220,11 +947,9 @@
   }
 
   function hitTest(point) {
-    if (app.state === 'idle') return cubeIsHit(point, master.hit, 9) ? 'master' : -1;
-    if (app.state === 'grid') {
-      for (let i = app.minis.length - 1; i >= 0; i -= 1) {
-        if (cubeIsHit(point, app.minis[i].hit, 6)) return i;
-      }
+    if (!app.interactionEnabled) return -1;
+    for (let i = app.minis.length - 1; i >= 0; i -= 1) {
+      if (cubeIsHit(point, app.minis[i].hit, 6)) return i;
     }
     return -1;
   }
@@ -1233,11 +958,8 @@
     const hit = hitTest(app.pointer);
     const next = typeof hit === 'number' ? hit : -1;
     app.hoveredIndex = next;
-    master.hovered = app.state === 'idle' && hit === 'master';
-    if (app.state === 'grid') {
-      for (const mini of app.minis) mini.hovered = mini.index === next;
-    }
-    canvas.style.cursor = hit === 'master' || next >= 0 ? 'pointer' : 'default';
+    for (const mini of app.minis) mini.hovered = mini.index === next;
+    canvas.style.cursor = next >= 0 ? 'pointer' : 'default';
   }
 
   function drawCubeLabel(mini) {
@@ -1332,44 +1054,6 @@
     ctx.restore();
   }
 
-  function renderMaster(time) {
-    const hoverStrength = master.hoverStrength;
-    const renderTarget = { ...master, half: master.half * master.hoverScale };
-    const glitchActive = glitch.active;
-    const frameSeed = glitch.seed + Math.floor(time / 16.6667);
-    if (glitchActive) {
-
-      renderCube(renderTarget, {
-        wireOnly: true,
-        edgeColor: GLITCH_MAGENTA,
-        edgeAlpha: .92 * glitch.intensity,
-        offsetX: -7.5 * glitch.intensity,
-        offsetY: 1.2 * glitch.intensity,
-        vertexJitter: .11 * glitch.intensity,
-        seed: frameSeed + 8
-      });
-      renderCube(renderTarget, {
-        wireOnly: true,
-        edgeColor: GLITCH_CYAN,
-        edgeAlpha: .96 * glitch.intensity,
-        offsetX: 7.5 * glitch.intensity,
-        offsetY: -1.2 * glitch.intensity,
-        vertexJitter: .105 * glitch.intensity,
-        seed: frameSeed + 29
-      });
-    }
-    master.hit = renderCube(renderTarget, {
-      vertexJitter: glitchActive ? .085 * glitch.intensity : 0,
-      seed: frameSeed,
-      edgeAlpha: glitchActive ? .96 : 1,
-      edgeGlow: lerp(1, 2.8, hoverStrength),
-      faceOutlineColor: blendHexColor(VECTOR_COLOR, EDGE_COLOR, hoverStrength),
-      faceOutlineAlpha: lerp(.28, .82, hoverStrength),
-      faceOutlineScale: lerp(1, 1.35, hoverStrength),
-      faceGlow: lerp(0, 10, hoverStrength)
-    });
-  }
-
   function renderMini(mini, time) {
     const hovered = mini.hovered;
     const glitchActive = glitch.active;
@@ -1410,22 +1094,12 @@
 
   function render(time) {
     drawBackground(time);
+    if (app.state === 'grid') updateGlitch(time);
 
-    if (app.state === 'locked' || app.state === 'unlocking' || app.state === 'idle') {
-      if (app.state === 'idle') updateGlitch(time);
-      drawOrbitingBytes(time, app.hexOpacity);
-      renderMaster(time);
-    } else {
-      if (app.state === 'transition') updateTransition(time);
-      if (app.hexOpacity > .001) drawOrbitingBytes(time, app.hexOpacity);
+    for (const mini of app.minis) renderMini(mini, time);
+    for (const mini of app.minis) drawCubeLabel(mini);
 
-      for (const mini of app.minis) renderMini(mini, time);
-      if (app.state === 'grid') {
-        for (const mini of app.minis) drawCubeLabel(mini);
-      }
-    }
-
-    if (app.state === 'idle' || app.state === 'grid') updateHover();
+    if (app.interactionEnabled) updateHover();
   }
 
   function frame(time) {
@@ -1433,16 +1107,9 @@
     const dt = elapsed / 1000;
     app.lastTime = time;
 
-    const introActive = app.state === 'locked' || app.state === 'unlocking';
-    if (introActive) {
-      updateMaster(dt, time);
-      updateIntroSequence(time);
-      render(time);
-    } else {
-      if (app.state === 'idle') updateMaster(dt, time);
-      if (app.state === 'grid') updateMinis(dt, time);
-      render(time);
-    }
+    if (app.state === 'unlocking') updateIntroSequence(time);
+    updateMinis(dt, time);
+    render(time);
     requestAnimationFrame(frame);
   }
 
@@ -1481,7 +1148,6 @@
   canvas.addEventListener('pointerleave', () => {
     app.pointer = { x: -9999, y: -9999 };
     app.hoveredIndex = -1;
-    master.hovered = false;
     for (const mini of app.minis) mini.hovered = false;
     canvas.style.cursor = 'default';
   });
@@ -1490,11 +1156,7 @@
     unlockAllAudio();
     app.pointer = pointerPosition(event);
     const hit = hitTest(app.pointer);
-    if (hit === 'master') {
-      beginSplit(performance.now());
-      return;
-    }
-    if (typeof hit === 'number' && app.state === 'grid') {
+    if (typeof hit === 'number') {
       const destination = app.minis[hit].href;
       window.location.assign(destination);
     }
@@ -1502,15 +1164,14 @@
 
   canvas.addEventListener('keydown', (event) => {
     unlockAllAudio();
-    if ((event.key === 'Enter' || event.key === ' ') && app.state === 'idle') {
-      event.preventDefault();
-      beginSplit(performance.now());
-    }
+    if (event.key === 'Escape') canvas.blur();
   });
 
   window.addEventListener('resize', resizeCanvas, { passive: true });
 
   preloadStaticGlitchAudio();
   resizeCanvas();
+  buildMinis();
+  updateGridTargets();
   requestAnimationFrame(frame);
 })();
