@@ -114,6 +114,14 @@
     stars: []
   };
 
+  const backgroundCache = {
+    canvas: null,
+    context: null,
+    width: 0,
+    height: 0,
+    dpr: 0
+  };
+
   function rebuildStars() {
     viewport.stars = [];
     let seed = 911;
@@ -146,6 +154,10 @@
     canvas.style.height = `${viewport.height}px`;
     ctx.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
     rebuildStars();
+    backgroundCache.width = 0;
+    backgroundCache.height = 0;
+    backgroundCache.dpr = 0;
+    rebuildBackgroundCache();
     if (app.state === 'grid' || app.state === 'transition') {
       updateGridTargets();
     }
@@ -168,13 +180,13 @@
     return vec((x - viewport.centerX) / unit, -(y - viewport.centerY) / unit, z);
   }
 
-  function drawBackground(time) {
+  function drawStaticBackground(target) {
     const w = viewport.width;
     const h = viewport.height;
-    ctx.fillStyle = '#05050e';
-    ctx.fillRect(0, 0, w, h);
+    target.fillStyle = '#05050e';
+    target.fillRect(0, 0, w, h);
 
-    const cyanGlow = ctx.createRadialGradient(
+    const cyanGlow = target.createRadialGradient(
       viewport.centerX - w * .22,
       viewport.centerY - h * .2,
       0,
@@ -185,10 +197,10 @@
     cyanGlow.addColorStop(0, 'rgba(0, 240, 255, .13)');
     cyanGlow.addColorStop(.34, 'rgba(0, 143, 190, .05)');
     cyanGlow.addColorStop(1, 'rgba(0, 20, 44, 0)');
-    ctx.fillStyle = cyanGlow;
-    ctx.fillRect(0, 0, w, h);
+    target.fillStyle = cyanGlow;
+    target.fillRect(0, 0, w, h);
 
-    const purpleGlow = ctx.createRadialGradient(
+    const purpleGlow = target.createRadialGradient(
       viewport.centerX + w * .24,
       viewport.centerY + h * .2,
       0,
@@ -199,15 +211,61 @@
     purpleGlow.addColorStop(0, 'rgba(189, 0, 255, .12)');
     purpleGlow.addColorStop(.38, 'rgba(121, 40, 202, .055)');
     purpleGlow.addColorStop(1, 'rgba(20, 0, 40, 0)');
-    ctx.fillStyle = purpleGlow;
-    ctx.fillRect(0, 0, w, h);
+    target.fillStyle = purpleGlow;
+    target.fillRect(0, 0, w, h);
 
-    const horizon = ctx.createLinearGradient(0, h * .33, 0, h);
+    const horizon = target.createLinearGradient(0, h * .33, 0, h);
     horizon.addColorStop(0, 'rgba(0, 240, 255, 0)');
     horizon.addColorStop(.54, 'rgba(121, 40, 202, .012)');
     horizon.addColorStop(1, 'rgba(0, 240, 255, .028)');
-    ctx.fillStyle = horizon;
-    ctx.fillRect(0, 0, w, h);
+    target.fillStyle = horizon;
+    target.fillRect(0, 0, w, h);
+
+    target.save();
+    target.strokeStyle = 'rgba(0, 240, 255, .045)';
+    target.lineWidth = 1;
+    target.beginPath();
+    target.arc(viewport.centerX, viewport.centerY, Math.min(w, h) * .27, 0, TAU);
+    target.stroke();
+    target.strokeStyle = 'rgba(189, 0, 255, .035)';
+    target.beginPath();
+    target.arc(viewport.centerX, viewport.centerY, Math.min(w, h) * .36, 0, TAU);
+    target.stroke();
+    target.restore();
+  }
+
+  function rebuildBackgroundCache() {
+    const width = canvas.width;
+    const height = canvas.height;
+    if (backgroundCache.canvas &&
+        backgroundCache.width === width &&
+        backgroundCache.height === height &&
+        backgroundCache.dpr === viewport.dpr) {
+      return;
+    }
+
+    if (!backgroundCache.canvas) backgroundCache.canvas = document.createElement('canvas');
+    backgroundCache.canvas.width = width;
+    backgroundCache.canvas.height = height;
+    backgroundCache.context = backgroundCache.canvas.getContext('2d', { alpha: false });
+    backgroundCache.context.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
+    drawStaticBackground(backgroundCache.context);
+    backgroundCache.width = width;
+    backgroundCache.height = height;
+    backgroundCache.dpr = viewport.dpr;
+  }
+
+  function drawBackground(time) {
+    const w = viewport.width;
+    const h = viewport.height;
+    rebuildBackgroundCache();
+
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.filter = 'none';
+    ctx.drawImage(backgroundCache.canvas, 0, 0, w, h);
+    ctx.restore();
 
     ctx.save();
     for (const star of viewport.stars) {
@@ -218,18 +276,6 @@
       ctx.arc(star.x * w, star.y * h, star.radius, 0, TAU);
       ctx.fill();
     }
-    ctx.restore();
-
-    ctx.save();
-    ctx.strokeStyle = 'rgba(0, 240, 255, .045)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(viewport.centerX, viewport.centerY, Math.min(w, h) * .27, 0, TAU);
-    ctx.stroke();
-    ctx.strokeStyle = 'rgba(189, 0, 255, .035)';
-    ctx.beginPath();
-    ctx.arc(viewport.centerX, viewport.centerY, Math.min(w, h) * .36, 0, TAU);
-    ctx.stroke();
     ctx.restore();
   }
 
