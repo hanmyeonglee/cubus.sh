@@ -77,26 +77,40 @@
   const cloneAngles = (a) => ({ x: a.x, y: a.y, z: a.z });
   const approachAngle = (from, to, amount) => from + wrapAngle(to - from) * amount;
 
-  function rotatePoint(point, rotation) {
+  function createRotationCache(rotation) {
+    return {
+      cosX: Math.cos(rotation.x),
+      sinX: Math.sin(rotation.x),
+      cosY: Math.cos(rotation.y),
+      sinY: Math.sin(rotation.y),
+      cosZ: Math.cos(rotation.z),
+      sinZ: Math.sin(rotation.z)
+    };
+  }
+
+  function rotatePointCached(point, rotation) {
     let { x, y, z } = point;
 
-    const cosZ = Math.cos(rotation.z);
-    const sinZ = Math.sin(rotation.z);
-    [x, y] = [x * cosZ - y * sinZ, x * sinZ + y * cosZ];
+    const rotatedX = x * rotation.cosZ - y * rotation.sinZ;
+    const rotatedY = x * rotation.sinZ + y * rotation.cosZ;
+    x = rotatedX;
+    y = rotatedY;
 
-    const cosY = Math.cos(rotation.y);
-    const sinY = Math.sin(rotation.y);
-    [x, z] = [x * cosY + z * sinY, -x * sinY + z * cosY];
+    const yawedX = x * rotation.cosY + z * rotation.sinY;
+    const yawedZ = -x * rotation.sinY + z * rotation.cosY;
+    x = yawedX;
+    z = yawedZ;
 
-    const cosX = Math.cos(rotation.x);
-    const sinX = Math.sin(rotation.x);
-    [y, z] = [y * cosX - z * sinX, y * sinX + z * cosX];
+    const pitchedY = y * rotation.cosX - z * rotation.sinX;
+    const pitchedZ = y * rotation.sinX + z * rotation.cosX;
+    y = pitchedY;
+    z = pitchedZ;
 
     return vec(x, y, z);
   }
 
-  function rotateNormal(normal, rotation) {
-    return normalize(rotatePoint(normal, rotation));
+  function rotatePoint(point, rotation) {
+    return rotatePointCached(point, createRotationCache(rotation));
   }
 
   function hashNoise(seed) {
@@ -329,7 +343,53 @@
     }
   ];
 
-  function transformedVertices(cube, options = {}) {
+  const sideFaceChevrons = Array.from({ length: 3 }, (_, row) => {
+    const v = -.55 + row * .55;
+    return [[-.28, v - .13], [0, v + .13], [.28, v - .13]];
+  });
+
+  const faceTextureChevrons = {
+    bottom: [
+      [[-.20, FACE_ARROW_GAP], [0, FACE_ARROW_REACH], [.20, FACE_ARROW_GAP]],
+      [[-.20, -FACE_ARROW_GAP], [0, -FACE_ARROW_REACH], [.20, -FACE_ARROW_GAP]],
+      [[FACE_ARROW_GAP, -.20], [FACE_ARROW_REACH, 0], [FACE_ARROW_GAP, .20]],
+      [[-FACE_ARROW_GAP, -.20], [-FACE_ARROW_REACH, 0], [-FACE_ARROW_GAP, .20]]
+    ],
+    top: [
+      [[-.20, .66], [0, FACE_ARROW_GAP], [.20, .66]],
+      [[-.20, -.66], [0, -FACE_ARROW_GAP], [.20, -.66]],
+      [[-.66, -.20], [-FACE_ARROW_GAP, 0], [-.66, .20]],
+      [[.66, -.20], [FACE_ARROW_GAP, 0], [.66, .20]]
+    ]
+  };
+
+  function buildFaceTextureGeometry(face) {
+    const chevrons = faceTextureChevrons[face.id] || sideFaceChevrons;
+    const points = [];
+    const pointIndexes = new Map();
+    const segments = [];
+    const pointIndex = ([u, v]) => {
+      const point = face.map(u, v);
+      const key = `${point.x}:${point.y}:${point.z}`;
+      if (!pointIndexes.has(key)) {
+        pointIndexes.set(key, points.length);
+        points.push(point);
+      }
+      return pointIndexes.get(key);
+    };
+
+    for (const [start, tip, end] of chevrons) {
+      const startIndex = pointIndex(start);
+      const tipIndex = pointIndex(tip);
+      const endIndex = pointIndex(end);
+      segments.push([startIndex, tipIndex], [tipIndex, endIndex]);
+    }
+    return { points, segments };
+  }
+
+  for (const face of faceDefs) face.textureGeometry = buildFaceTextureGeometry(face);
+
+  function transformedVertices(cube, options, rotation) {
     const vertexJitter = options.vertexJitter || 0;
     const seed = options.seed || 0;
     return cubeVertices.map((vertex, index) => {
@@ -341,20 +401,12 @@
           hashNoise(seed + index * 43.73 + 23) * vertexJitter
         ));
       }
-      return add(cube.position, rotatePoint(local, cube.rotation));
+      return add(cube.position, rotatePointCached(local, rotation));
     });
   }
 
-  function faceCenter(cube, face) {
-    return add(cube.position, rotatePoint(scaleVec(face.normal, cube.half), cube.rotation));
-  }
-
-  function faceNormal(cube, face) {
-    return rotateNormal(face.normal, cube.rotation);
-  }
-
-  function makeProjectedPoint(cube, localPoint, options) {
-    const world = add(cube.position, rotatePoint(scaleVec(localPoint, cube.half), cube.rotation));
+  function makeProjectedPoint(cube, localPoint, options, rotation) {
+    const world = add(cube.position, rotatePointCached(scaleVec(localPoint, cube.half), rotation));
     const projected = worldToScreen(world);
     projected.x += options.offsetX || 0;
     projected.y += options.offsetY || 0;
@@ -362,7 +414,7 @@
     return projected;
   }
 
-  function strokeProjectedPath(points, color, width, alpha = 1, glow = 0) {
+  function strokeProjectedPath(points, color, width, alpha = 1, glow = 0, closed = false) {
     if (!points.length) return;
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -375,52 +427,32 @@
     ctx.beginPath();
     ctx.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
+    if (closed) ctx.closePath();
     ctx.stroke();
     ctx.restore();
   }
 
-  function drawLocalStroke(cube, points, color, width, options, alpha = 1) {
-    const projected = points.map((point) => {
-      const local = Array.isArray(point)
-        ? vec(point[0], point[1], point[2] || 0)
-        : point;
-      return makeProjectedPoint(cube, local, options);
-    });
-    strokeProjectedPath(projected, color, width, alpha);
-  }
-
-  function drawChevron(cube, face, a, tip, b, options, alpha) {
-    const mapPoint = ([u, v]) => face.map(u, v);
-    drawLocalStroke(cube, [mapPoint(a), mapPoint(tip)], VECTOR_COLOR, Math.max(.72, cube.half * 2.15), options, alpha);
-    drawLocalStroke(cube, [mapPoint(tip), mapPoint(b)], VECTOR_COLOR, Math.max(.72, cube.half * 2.15), options, alpha);
-  }
-
-  function drawFaceTexture(cube, face, options, facing) {
+  function drawFaceTexture(cube, face, options, facing, rotation) {
     const visibility = clamp(.38 + facing * .62, .12, 1);
     const alpha = (options.textureAlpha ?? 1) * visibility;
+    const geometry = face.textureGeometry;
+    const projected = geometry.points.map((point) => makeProjectedPoint(cube, point, options, rotation));
 
-    if (face.id === 'bottom') {
-
-      drawChevron(cube, face, [-.20, FACE_ARROW_GAP], [0, FACE_ARROW_REACH], [.20, FACE_ARROW_GAP], options, alpha);
-      drawChevron(cube, face, [-.20, -FACE_ARROW_GAP], [0, -FACE_ARROW_REACH], [.20, -FACE_ARROW_GAP], options, alpha);
-      drawChevron(cube, face, [FACE_ARROW_GAP, -.20], [FACE_ARROW_REACH, 0], [FACE_ARROW_GAP, .20], options, alpha);
-      drawChevron(cube, face, [-FACE_ARROW_GAP, -.20], [-FACE_ARROW_REACH, 0], [-FACE_ARROW_GAP, .20], options, alpha);
-      return;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = VECTOR_COLOR;
+    ctx.lineWidth = Math.max(.72, cube.half * 2.15);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.shadowColor = VECTOR_COLOR;
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    for (const [from, to] of geometry.segments) {
+      ctx.moveTo(projected[from].x, projected[from].y);
+      ctx.lineTo(projected[to].x, projected[to].y);
     }
-
-    if (face.id === 'top') {
-
-      drawChevron(cube, face, [-.20, .66], [0, FACE_ARROW_GAP], [.20, .66], options, alpha);
-      drawChevron(cube, face, [-.20, -.66], [0, -FACE_ARROW_GAP], [.20, -.66], options, alpha);
-      drawChevron(cube, face, [-.66, -.20], [-FACE_ARROW_GAP, 0], [-.66, .20], options, alpha);
-      drawChevron(cube, face, [.66, -.20], [FACE_ARROW_GAP, 0], [.66, .20], options, alpha);
-      return;
-    }
-
-    for (let row = 0; row < 3; row += 1) {
-      const v = -.55 + row * .55;
-      drawChevron(cube, face, [-.28, v - .13], [0, v + .13], [.28, v - .13], options, alpha);
-    }
+    ctx.stroke();
+    ctx.restore();
   }
 
   function renderCube(cube, options = {}) {
@@ -442,7 +474,8 @@
       ...options
     };
 
-    const worldVertices = transformedVertices(cube, settings);
+    const rotation = createRotationCache(cube.rotation);
+    const worldVertices = transformedVertices(cube, settings, rotation);
     const projectedVertices = worldVertices.map((world) => {
       const projected = worldToScreen(world);
       projected.x += settings.offsetX;
@@ -453,8 +486,8 @@
 
     const cameraPosition = vec(0, 0, CAMERA_Z);
     const projectedFaces = faceDefs.map((face) => {
-      const center = faceCenter(cube, face);
-      const normal = faceNormal(cube, face);
+      const normal = rotatePointCached(face.normal, rotation);
+      const center = add(cube.position, scaleVec(normal, cube.half));
       const toCamera = normalize(add(cameraPosition, scaleVec(center, -1)));
       const facing = dot(normal, toCamera);
       const points = face.vertices.map((index) => projectedVertices[index]);
@@ -469,29 +502,30 @@
     projectedFaces.sort((a, b) => a.depth - b.depth);
 
     if (!settings.wireOnly) {
+      ctx.save();
+      ctx.fillStyle = FACE_COLOR;
       for (const item of projectedFaces) {
         const faceAlpha = settings.fillAlpha * clamp(.13 + Math.max(0, item.facing) * .22, .10, .36);
-        ctx.save();
         ctx.globalAlpha = faceAlpha;
-        ctx.fillStyle = FACE_COLOR;
         ctx.beginPath();
         ctx.moveTo(item.points[0].x, item.points[0].y);
         for (let i = 1; i < item.points.length; i += 1) ctx.lineTo(item.points[i].x, item.points[i].y);
         ctx.closePath();
         ctx.fill();
-        ctx.restore();
       }
+      ctx.restore();
 
       for (const item of projectedFaces) {
         const localAlpha = settings.textureAlpha * clamp(.24 + Math.max(0, item.facing) * .76, .2, 1);
-        drawFaceTexture(cube, item.face, settings, item.facing);
+        drawFaceTexture(cube, item.face, settings, item.facing, rotation);
 
         strokeProjectedPath(
-          item.points.concat([item.points[0]]),
+          item.points,
           settings.faceOutlineColor,
           Math.max(.45, cube.half * .48) * settings.faceOutlineScale,
           localAlpha * settings.faceOutlineAlpha,
-          settings.faceGlow
+          settings.faceGlow,
+          true
         );
       }
     }
@@ -504,12 +538,12 @@
     ctx.lineCap = 'round';
     ctx.shadowColor = settings.edgeColor;
     ctx.shadowBlur = (settings.edgeColor === EDGE_COLOR ? Math.max(5, cube.half * 5.2) : Math.max(3, cube.half * 3)) * settings.edgeGlow;
+    ctx.beginPath();
     for (const [from, to] of cubeEdges) {
-      ctx.beginPath();
       ctx.moveTo(projectedVertices[from].x, projectedVertices[from].y);
       ctx.lineTo(projectedVertices[to].x, projectedVertices[to].y);
-      ctx.stroke();
     }
+    ctx.stroke();
     ctx.restore();
 
     return {
@@ -520,14 +554,17 @@
   }
 
   function getBounds(points) {
-    const xs = points.map((point) => point.x);
-    const ys = points.map((point) => point.y);
-    return {
-      left: Math.min(...xs),
-      right: Math.max(...xs),
-      top: Math.min(...ys),
-      bottom: Math.max(...ys)
-    };
+    let left = Infinity;
+    let right = -Infinity;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const point of points) {
+      if (point.x < left) left = point.x;
+      if (point.x > right) right = point.x;
+      if (point.y < top) top = point.y;
+      if (point.y > bottom) bottom = point.y;
+    }
+    return { left, right, top, bottom };
   }
 
   const orbitingBytes = Array.from({ length: 12 }, (_, index) => ({
