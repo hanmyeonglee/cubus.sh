@@ -599,14 +599,64 @@
     x: ['x']
   };
 
-  function drawDigitalByte(value, size) {
+  const DIGITAL_PATH_SIZE_STEP = .125;
+  const DIGITAL_PATH_CACHE_LIMIT = 768;
+  const digitalBytePathCache = new Map();
+
+  function addDigitalSegment(path, segment, left, width, top, bottom, inset) {
+    const mid = (top + bottom) / 2;
+    const addLine = (x1, y1, x2, y2) => {
+      path.moveTo(x1, y1);
+      path.lineTo(x2, y2);
+    };
+
+    if (segment === 'a') addLine(left + inset, top + inset, left + width - inset, top + inset);
+    else if (segment === 'b') addLine(left + width - inset, top + inset, left + width - inset, mid - inset);
+    else if (segment === 'c') addLine(left + width - inset, mid + inset, left + width - inset, bottom - inset);
+    else if (segment === 'd') addLine(left + inset, bottom - inset, left + width - inset, bottom - inset);
+    else if (segment === 'e') addLine(left + inset, mid + inset, left + inset, bottom - inset);
+    else if (segment === 'f') addLine(left + inset, top + inset, left + inset, mid - inset);
+    else if (segment === 'g') addLine(left + inset, mid, left + width - inset, mid);
+    else if (segment === 'x') {
+      addLine(left + inset, top + inset, left + width - inset, bottom - inset);
+      addLine(left + width - inset, top + inset, left + inset, bottom - inset);
+    }
+  }
+
+  function buildDigitalBytePath(value, size) {
     const height = size;
     const width = size * .56;
     const thickness = Math.max(.8, size * .095);
     const gap = size * .14;
     const totalWidth = value.length * width + (value.length - 1) * gap;
     const top = -height / 2;
+    const bottom = top + height;
     const firstLeft = -totalWidth / 2;
+    const inset = thickness * .55;
+    const path = new Path2D();
+
+    for (let index = 0; index < value.length; index += 1) {
+      const left = firstLeft + index * (width + gap);
+      for (const segment of DIGITAL_SEGMENTS[value[index]] || []) {
+        addDigitalSegment(path, segment, left, width, top, bottom, inset);
+      }
+    }
+    return path;
+  }
+
+  function getDigitalBytePath(value, size) {
+    const sizeBucket = Math.round(size / DIGITAL_PATH_SIZE_STEP);
+    const key = `${value}:${sizeBucket}`;
+    let path = digitalBytePathCache.get(key);
+    if (path) return path;
+    if (digitalBytePathCache.size >= DIGITAL_PATH_CACHE_LIMIT) digitalBytePathCache.clear();
+    path = buildDigitalBytePath(value, sizeBucket * DIGITAL_PATH_SIZE_STEP);
+    digitalBytePathCache.set(key, path);
+    return path;
+  }
+
+  function drawDigitalByte(value, size) {
+    const thickness = Math.max(.8, size * .095);
 
     ctx.save();
     ctx.strokeStyle = SIGNAL_COLOR;
@@ -615,43 +665,7 @@
     ctx.lineJoin = 'round';
     ctx.shadowColor = SIGNAL_COLOR;
     ctx.shadowBlur = Math.max(3, size * .72);
-
-    for (let index = 0; index < value.length; index += 1) {
-      const character = value[index];
-      const left = firstLeft + index * (width + gap);
-      const mid = top + height / 2;
-      const inset = thickness * .55;
-      const segments = {
-        a: [left + inset, top + inset, left + width - inset, top + inset],
-        b: [left + width - inset, top + inset, left + width - inset, mid - inset],
-        c: [left + width - inset, mid + inset, left + width - inset, top + height - inset],
-        d: [left + inset, top + height - inset, left + width - inset, top + height - inset],
-        e: [left + inset, mid + inset, left + inset, top + height - inset],
-        f: [left + inset, top + inset, left + inset, mid - inset],
-        g: [left + inset, mid, left + width - inset, mid],
-        x: [
-          [left + inset, top + inset, left + width - inset, top + height - inset],
-          [left + width - inset, top + inset, left + inset, top + height - inset]
-        ]
-      };
-
-      for (const segment of DIGITAL_SEGMENTS[character] || []) {
-        if (segment === 'x') {
-          for (const diagonal of segments.x) {
-            ctx.beginPath();
-            ctx.moveTo(diagonal[0], diagonal[1]);
-            ctx.lineTo(diagonal[2], diagonal[3]);
-            ctx.stroke();
-          }
-          continue;
-        }
-        const line = segments[segment];
-        ctx.beginPath();
-        ctx.moveTo(line[0], line[1]);
-        ctx.lineTo(line[2], line[3]);
-        ctx.stroke();
-      }
-    }
+    ctx.stroke(getDigitalBytePath(value, size));
     ctx.restore();
   }
 
