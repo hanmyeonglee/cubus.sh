@@ -84,17 +84,52 @@
       isOpened: false,
       isOpening: false,
       openingStartedAt: 0,
-      unlockActive: false,
+      keypadSequence: [],
       ledPersistent: false,
       wallPulseUntil: 0
     }))
   };
 
   const BULKHEAD_TIMING = {
+    keypadDuration: 500,
     unlockDuration: 400,
     slideDuration: 800
   };
   const BUNKER_APERTURE_HIT_INSET = -3;
+  const KEYPAD_KEY_COUNT = 20;
+
+  function createKeypadSequence() {
+    const indices = Array.from({ length: KEYPAD_KEY_COUNT }, (_, index) => index);
+    for (let i = indices.length - 1; i > 0; i -= 1) {
+      const swapIndex = Math.floor(Math.random() * (i + 1));
+      [indices[i], indices[swapIndex]] = [indices[swapIndex], indices[i]];
+    }
+    const count = 4 + Math.floor(Math.random() * 2);
+    const interval = BULKHEAD_TIMING.keypadDuration / count;
+    const pressDuration = Math.min(78, interval * .72);
+    return indices.slice(0, count).map((keyIndex, order) => ({
+      keyIndex,
+      start: order * interval,
+      duration: pressDuration,
+      played: false
+    }));
+  }
+
+  function getKeypadPressAmount(state, keyIndex, time) {
+    if (!state || !state.isOpening || !state.keypadSequence.length) return 0;
+    const elapsed = time - state.openingStartedAt;
+    const key = state.keypadSequence.find((entry) => entry.keyIndex === keyIndex);
+    if (!key) return 0;
+    const progress = (elapsed - key.start) / key.duration;
+    if (progress <= 0 || progress >= 1) return 0;
+    return Math.sin(Math.PI * progress);
+  }
+
+  function getKeypadEnteredCount(state, time) {
+    if (!state || !state.isOpening || !state.keypadSequence.length) return 0;
+    const elapsed = time - state.openingStartedAt;
+    return state.keypadSequence.filter((entry) => elapsed >= entry.start).length;
+  }
 
   function createRotationCache(rotation) {
     return {
@@ -552,6 +587,90 @@
     target.restore();
   }
 
+  function drawShutterKeypad(target, aperture, state, offsetY, time) {
+    const keypadWidth = clamp(aperture.width * .16, 18, 48);
+    const keypadHeight = clamp(Math.min(keypadWidth * 1.28, aperture.height * .20), 24, 68);
+    const keypadRight = aperture.x + aperture.width / 2 - aperture.width * .11;
+    const keypadLeft = keypadRight - keypadWidth;
+    const displayHeight = clamp(keypadHeight * .18, 4, 8);
+    const seamSafeTop = aperture.y - aperture.height / 2 + aperture.height * .62;
+    const requestedTop = aperture.y - aperture.height / 2 + aperture.height * .65;
+    const keypadTop = Math.max(requestedTop, seamSafeTop + displayHeight + 6);
+    const deviceCenterX = keypadLeft + keypadWidth / 2;
+    const displayWidth = keypadWidth + 2;
+    const displayLeft = deviceCenterX - displayWidth / 2;
+    const displayTop = keypadTop - displayHeight - 6;
+    const enteredCount = getKeypadEnteredCount(state, time);
+    const gap = clamp(Math.min(keypadWidth, keypadHeight) * .07, 1.5, 3);
+    const padding = 2;
+    const keyWidth = (keypadWidth - padding * 2 - gap * 3) / 4;
+    const keyHeight = (keypadHeight - padding * 2 - gap * 4) / 5;
+
+    target.save();
+    drawBunkerAperturePath(target, aperture);
+    target.clip();
+    target.translate(0, offsetY);
+
+    // The device is inset from the right/bottom edges and starts below the
+    // lowest point of the concave seam, so it never crosses the seal.
+    target.fillStyle = 'rgba(6, 12, 15, .9)';
+    target.strokeStyle = 'rgba(123, 161, 160, .5)';
+    target.lineWidth = 1;
+    target.fillRect(keypadLeft, keypadTop, keypadWidth, keypadHeight);
+    target.strokeRect(keypadLeft, keypadTop, keypadWidth, keypadHeight);
+
+    target.fillStyle = 'rgba(3, 10, 13, .96)';
+    target.strokeStyle = 'rgba(118, 177, 180, .72)';
+    target.fillRect(displayLeft, displayTop, displayWidth, displayHeight);
+    target.strokeRect(displayLeft, displayTop, displayWidth, displayHeight);
+    target.strokeStyle = 'rgba(0, 240, 255, .48)';
+    target.beginPath();
+    target.moveTo(displayLeft + 1, displayTop + 1);
+    target.lineTo(displayLeft + displayWidth - 1, displayTop + 1);
+    target.moveTo(displayLeft + 1, displayTop + displayHeight - 1);
+    target.lineTo(displayLeft + displayWidth - 1, displayTop + displayHeight - 1);
+    target.stroke();
+    if (enteredCount > 0) {
+      target.font = `${clamp(displayHeight * 1.15, 5, 8)}px ${FONT_STACK}`;
+      target.textAlign = 'center';
+      target.textBaseline = 'middle';
+      target.fillStyle = '#00ff00';
+      target.shadowColor = 'rgba(0, 255, 0, .92)';
+      target.shadowBlur = 5;
+      target.fillText('*'.repeat(enteredCount), deviceCenterX, displayTop + displayHeight * .54);
+      target.shadowBlur = 0;
+    }
+    const scanX = displayLeft + ((time * .0011) % 1) * displayWidth;
+    target.strokeStyle = 'rgba(0, 240, 255, .62)';
+    target.lineWidth = 1;
+    target.beginPath();
+    target.moveTo(scanX, displayTop + 1);
+    target.lineTo(scanX, displayTop + displayHeight - 1);
+    target.stroke();
+
+    for (let row = 0; row < 5; row += 1) {
+      for (let column = 0; column < 4; column += 1) {
+        const keyIndex = row * 4 + column;
+        const pressAmount = getKeypadPressAmount(state, keyIndex, time);
+        const x = keypadLeft + padding + column * (keyWidth + gap);
+        const y = keypadTop + padding + row * (keyHeight + gap) + pressAmount * 1.5;
+        target.save();
+        target.fillStyle = pressAmount > 0
+          ? 'rgba(0, 255, 102, .58)'
+          : 'rgba(27, 36, 39, .98)';
+        target.strokeStyle = pressAmount > 0
+          ? 'rgba(164, 255, 190, .9)'
+          : 'rgba(104, 135, 135, .58)';
+        target.shadowColor = pressAmount > 0 ? 'rgba(0, 255, 102, .85)' : 'rgba(0, 0, 0, .4)';
+        target.shadowBlur = pressAmount > 0 ? 6 : 1.5;
+        target.fillRect(x, y, keyWidth, keyHeight);
+        target.strokeRect(x, y, keyWidth, keyHeight);
+        target.restore();
+      }
+    }
+    target.restore();
+  }
+
   function drawShutterSlit(target, aperture, offsetY, unlockGlow) {
     target.save();
     drawBunkerAperturePath(target, aperture);
@@ -562,9 +681,9 @@
     target.fill();
     target.globalCompositeOperation = 'source-over';
     if (unlockGlow > 0) {
-      target.fillStyle = 'rgba(0, 255, 0, .24)';
+      target.fillStyle = `rgba(0, 255, 0, ${.14 + unlockGlow * .28})`;
       target.shadowColor = 'rgba(0, 255, 0, .92)';
-      target.shadowBlur = 18;
+      target.shadowBlur = 12 + unlockGlow * 14;
       drawShutterSlitPath(target, aperture);
       target.fill();
       target.shadowBlur = 0;
@@ -605,7 +724,7 @@
     target.restore();
   }
 
-  function drawApertureShutters(target, aperture, bayIndex, openingProgress = 0, unlockGlow = 0) {
+  function drawApertureShutters(target, aperture, bayIndex, openingProgress = 0, unlockGlow = 0, time = 0) {
     const seam = getShutterSeamPoints(aperture);
     const travel = (aperture.height + 26) * easeInOutCubic(openingProgress);
     const topOffset = -travel;
@@ -613,6 +732,7 @@
 
     drawShutterPanel(target, aperture, seam, bayIndex, true, topOffset);
     drawShutterPanel(target, aperture, seam, bayIndex, false, bottomOffset);
+    drawShutterKeypad(target, aperture, bulkheadState.bays[bayIndex], bottomOffset, time);
     drawShutterSlit(target, aperture, topOffset, unlockGlow);
     drawShutterSeam(target, aperture, seam, topOffset);
     drawShutterSeam(target, aperture, seam, bottomOffset);
@@ -623,13 +743,19 @@
     if (!state) return 0;
     if (!state.isOpening) return state.isOpened ? 1 : 0;
     const elapsed = time - state.openingStartedAt;
-    const slideElapsed = Math.max(0, elapsed - BULKHEAD_TIMING.unlockDuration);
+    const slideElapsed = Math.max(
+      0,
+      elapsed - BULKHEAD_TIMING.keypadDuration - BULKHEAD_TIMING.unlockDuration
+    );
     return clamp(slideElapsed / BULKHEAD_TIMING.slideDuration, 0, 1);
   }
 
-  function getBulkheadUnlockGlow(bayIndex) {
+  function getBulkheadUnlockGlow(bayIndex, time) {
     const state = bulkheadState.bays[bayIndex];
-    return state && state.isOpening && state.unlockActive ? 1 : 0;
+    if (!state || !state.isOpening) return 0;
+    const elapsed = time - state.openingStartedAt - BULKHEAD_TIMING.keypadDuration;
+    if (elapsed < 0 || elapsed >= BULKHEAD_TIMING.unlockDuration) return 0;
+    return Math.pow(Math.abs(Math.sin(elapsed / BULKHEAD_TIMING.unlockDuration * Math.PI * 3)), 8);
   }
 
   function drawBunkerWall(time = performance.now()) {
@@ -669,7 +795,8 @@
           aperture,
           mini.index,
           getBulkheadOpeningProgress(mini.index, time),
-          getBulkheadUnlockGlow(mini.index)
+          getBulkheadUnlockGlow(mini.index, time),
+          time
         );
       }
 
@@ -1261,6 +1388,89 @@
     }
   }
 
+  const keypadAudio = {
+    context: null,
+    unlocked: false,
+    warned: false
+  };
+
+  function unlockKeypadAudio() {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (typeof AudioContext !== 'function') {
+      if (!keypadAudio.warned) {
+        console.warn('[CUBUS AUDIO] Web Audio is unavailable; keypad click cues are disabled.');
+        keypadAudio.warned = true;
+      }
+      return false;
+    }
+    try {
+      if (!keypadAudio.context) keypadAudio.context = new AudioContext();
+      if (keypadAudio.context.state === 'suspended') {
+        const resume = keypadAudio.context.resume();
+        if (resume && typeof resume.catch === 'function') resume.catch(() => {});
+      }
+      keypadAudio.unlocked = true;
+      return true;
+    } catch (error) {
+      if (!keypadAudio.warned) {
+        console.warn('[CUBUS AUDIO] Keypad click cues could not be initialized:', error);
+        keypadAudio.warned = true;
+      }
+      return false;
+    }
+  }
+
+  function playKeypadClick(keyIndex) {
+    const audioContext = keypadAudio.context;
+    if (!keypadAudio.unlocked || !audioContext) return false;
+    try {
+      const start = audioContext.currentTime;
+      const pitch = 760 + (keyIndex % 4) * 70;
+      const gain = audioContext.createGain();
+      const oscillator = audioContext.createOscillator();
+      const metallicOscillator = audioContext.createOscillator();
+      const metallicGain = audioContext.createGain();
+
+      oscillator.type = 'square';
+      oscillator.frequency.setValueAtTime(pitch, start);
+      oscillator.frequency.exponentialRampToValueAtTime(180, start + .055);
+      gain.gain.setValueAtTime(.0001, start);
+      gain.gain.exponentialRampToValueAtTime(.12, start + .002);
+      gain.gain.exponentialRampToValueAtTime(.0001, start + .065);
+
+      metallicOscillator.type = 'triangle';
+      metallicOscillator.frequency.setValueAtTime(pitch * 2.7, start);
+      metallicOscillator.frequency.exponentialRampToValueAtTime(pitch * 1.2, start + .04);
+      metallicGain.gain.setValueAtTime(.0001, start);
+      metallicGain.gain.exponentialRampToValueAtTime(.045, start + .001);
+      metallicGain.gain.exponentialRampToValueAtTime(.0001, start + .045);
+
+      oscillator.connect(gain);
+      metallicOscillator.connect(metallicGain);
+      gain.connect(audioContext.destination);
+      metallicGain.connect(audioContext.destination);
+      oscillator.start(start);
+      metallicOscillator.start(start);
+      oscillator.stop(start + .07);
+      metallicOscillator.stop(start + .05);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function updateKeypadAudio(state, elapsed) {
+    if (elapsed > BULKHEAD_TIMING.keypadDuration) {
+      for (const key of state.keypadSequence) key.played = true;
+      return;
+    }
+    for (const key of state.keypadSequence) {
+      if (key.played || elapsed < key.start) continue;
+      key.played = true;
+      playKeypadClick(key.keyIndex);
+    }
+  }
+
   function startGlitch(time) {
     if (!glitch.enabled) return;
     glitch.active = true;
@@ -1320,7 +1530,7 @@
     state.isOpened = nextState;
     state.isOpening = false;
     state.openingStartedAt = 0;
-    state.unlockActive = false;
+    state.keypadSequence = [];
     state.ledPersistent = nextState;
     state.wallPulseUntil = 0;
     resetHoverState();
@@ -1335,7 +1545,7 @@
     if (state.isOpened || state.isOpening) return false;
     state.isOpening = true;
     state.openingStartedAt = time;
-    state.unlockActive = true;
+    state.keypadSequence = createKeypadSequence();
     state.ledPersistent = true;
     state.wallPulseUntil = 0;
     resetHoverState();
@@ -1345,15 +1555,19 @@
   }
 
   function updateBulkheadOpening(time) {
-    const duration = BULKHEAD_TIMING.unlockDuration + BULKHEAD_TIMING.slideDuration;
+    const duration = BULKHEAD_TIMING.keypadDuration +
+      BULKHEAD_TIMING.unlockDuration +
+      BULKHEAD_TIMING.slideDuration;
     let hasOpening = false;
     for (const state of bulkheadState.bays) {
       if (!state.isOpening) continue;
       hasOpening = true;
+      const elapsed = time - state.openingStartedAt;
+      updateKeypadAudio(state, elapsed);
       if (time - state.openingStartedAt >= duration) {
         state.isOpening = false;
         state.isOpened = true;
-        state.unlockActive = false;
+        state.keypadSequence = [];
         state.ledPersistent = true;
         state.wallPulseUntil = 0;
       }
@@ -1562,6 +1776,8 @@
   function renderMini(mini, time) {
     const bayState = bulkheadState.bays[mini.index];
     const hovered = bayState.isOpened && !bayState.isOpening && mini.hovered;
+    const unlockGlow = getBulkheadUnlockGlow(mini.index, time);
+    const unlockHighlight = unlockGlow > .02;
     const glitchActive = glitch.active;
     const frameSeed = glitch.seed + Math.floor(time / 16.6667);
     if (glitchActive) {
@@ -1587,10 +1803,10 @@
     mini.hit = renderCube(mini, {
       vertexJitter: glitchActive ? .06 * glitch.intensity : 0,
       seed: frameSeed + mini.index,
-      edgeAlpha: hovered ? 1.35 : .92,
-      edgeColor: hovered ? '#ffffff' : EDGE_COLOR,
-      fillAlpha: hovered ? 1.16 : .88,
-      textureAlpha: hovered ? 1.18 : .82
+      edgeAlpha: unlockHighlight ? 1.18 + unlockGlow * .22 : hovered ? 1.35 : .92,
+      edgeColor: unlockHighlight ? '#00ff00' : hovered ? '#ffffff' : EDGE_COLOR,
+      fillAlpha: unlockHighlight ? 1.02 + unlockGlow * .14 : hovered ? 1.16 : .88,
+      textureAlpha: unlockHighlight ? 1.02 + unlockGlow * .16 : hovered ? 1.18 : .82
     });
   }
 
@@ -1625,6 +1841,7 @@
 
   function unlockAllAudio() {
     unlockStaticGlitchAudio();
+    unlockKeypadAudio();
   }
 
   window.addEventListener('pointerdown', unlockAllAudio, { capture: true });
