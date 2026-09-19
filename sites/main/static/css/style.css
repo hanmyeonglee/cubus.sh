@@ -50,9 +50,19 @@ body {
   pointer-events: none;
 }
 
-.bunker-leds {
+#bunker-fx {
   position: fixed;
   z-index: 3;
+  inset: 0;
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+}
+
+.bunker-leds {
+  position: fixed;
+  z-index: 4;
   inset: 0;
   pointer-events: none;
 }

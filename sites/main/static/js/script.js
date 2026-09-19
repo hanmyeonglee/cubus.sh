@@ -5,11 +5,14 @@
   const ctx = canvas.getContext('2d', { alpha: false });
   const bunkerWallCanvas = document.getElementById('bunker-wall');
   const bunkerWallCtx = bunkerWallCanvas.getContext('2d');
+  const bunkerFxCanvas = document.getElementById('bunker-fx');
+  const bunkerFxCtx = bunkerFxCanvas.getContext('2d');
   const bunkerWallCacheCanvas = document.createElement('canvas');
   const bunkerWallCacheCtx = bunkerWallCacheCanvas.getContext('2d');
   const bunkerHazardCanvas = document.createElement('canvas');
   const bunkerHazardCtx = bunkerHazardCanvas.getContext('2d');
   let bunkerHazardPattern = null;
+  let bunkerFxVisible = false;
 
   bunkerHazardCanvas.width = 36;
   bunkerHazardCanvas.height = 36;
@@ -77,8 +80,21 @@
   };
 
   const bulkheadState = {
-    isOpened: false
+    bays: Array.from({ length: navItems.length }, () => ({
+      isOpened: false,
+      isOpening: false,
+      openingStartedAt: 0,
+      unlockActive: false,
+      ledPersistent: false,
+      wallPulseUntil: 0
+    }))
   };
+
+  const BULKHEAD_TIMING = {
+    unlockDuration: 400,
+    slideDuration: 800
+  };
+  const BUNKER_APERTURE_HIT_INSET = -3;
 
   function createRotationCache(rotation) {
     return {
@@ -473,45 +489,38 @@
     return bunkerHazardPattern;
   }
 
-  function drawApertureShutters(target, aperture, bayIndex) {
-    const seam = getShutterSeamPoints(aperture);
+  function drawShutterPanel(target, aperture, seam, bayIndex, topPanel, offsetY) {
     const left = aperture.x - aperture.width / 2;
     const right = aperture.x + aperture.width / 2;
     const top = aperture.y - aperture.height / 2;
     const bottom = aperture.y + aperture.height / 2;
     const radius = clamp(aperture.width * .035, 1.8, 3.5);
+    const gradient = topPanel
+      ? target.createLinearGradient(0, top, 0, aperture.y)
+      : target.createLinearGradient(0, aperture.y, 0, bottom);
+
+    if (topPanel) {
+      gradient.addColorStop(0, '#4b5050');
+      gradient.addColorStop(.54, '#2d3538');
+      gradient.addColorStop(1, '#171e22');
+    } else {
+      gradient.addColorStop(0, '#20282c');
+      gradient.addColorStop(.48, '#30383a');
+      gradient.addColorStop(1, '#151b1f');
+    }
 
     target.save();
     drawBunkerAperturePath(target, aperture);
     target.clip();
-
-    const topMetal = target.createLinearGradient(0, top, 0, aperture.y);
-    topMetal.addColorStop(0, '#4b5050');
-    topMetal.addColorStop(.54, '#2d3538');
-    topMetal.addColorStop(1, '#171e22');
-    target.fillStyle = topMetal;
-    drawShutterPolygon(target, aperture, seam, true);
-    target.fill();
-
-    const bottomMetal = target.createLinearGradient(0, aperture.y, 0, bottom);
-    bottomMetal.addColorStop(0, '#20282c');
-    bottomMetal.addColorStop(.48, '#30383a');
-    bottomMetal.addColorStop(1, '#151b1f');
-    target.fillStyle = bottomMetal;
-    drawShutterPolygon(target, aperture, seam, false);
+    target.translate(0, offsetY);
+    target.fillStyle = gradient;
+    drawShutterPolygon(target, aperture, seam, topPanel);
     target.fill();
 
     target.strokeStyle = 'rgba(211, 220, 213, .17)';
     target.lineWidth = 1;
     for (let i = 1; i < 4; i += 1) {
-      const y = top + aperture.height * i * .12;
-      target.beginPath();
-      target.moveTo(left + aperture.width * .12, y);
-      target.lineTo(right - aperture.width * .12, y);
-      target.stroke();
-    }
-    for (let i = 1; i < 4; i += 1) {
-      const y = bottom - aperture.height * i * .12;
+      const y = topPanel ? top + aperture.height * i * .12 : bottom - aperture.height * i * .12;
       target.beginPath();
       target.moveTo(left + aperture.width * .12, y);
       target.lineTo(right - aperture.width * .12, y);
@@ -521,42 +530,64 @@
     target.strokeStyle = 'rgba(5, 9, 11, .66)';
     target.lineWidth = 2;
     target.beginPath();
-    target.moveTo(left + aperture.width * .16, top + 4);
-    target.lineTo(left + aperture.width * .16, seam[1].y - 6);
-    target.moveTo(right - aperture.width * .16, top + 4);
-    target.lineTo(right - aperture.width * .16, seam[4].y - 6);
-    target.moveTo(left + aperture.width * .16, seam[1].y + 6);
-    target.lineTo(left + aperture.width * .16, bottom - 4);
-    target.moveTo(right - aperture.width * .16, seam[4].y + 6);
-    target.lineTo(right - aperture.width * .16, bottom - 4);
+    if (topPanel) {
+      target.moveTo(left + aperture.width * .16, top + 4);
+      target.lineTo(left + aperture.width * .16, seam[1].y - 6);
+      target.moveTo(right - aperture.width * .16, top + 4);
+      target.lineTo(right - aperture.width * .16, seam[4].y - 6);
+    } else {
+      target.moveTo(left + aperture.width * .16, seam[1].y + 6);
+      target.lineTo(left + aperture.width * .16, bottom - 4);
+      target.moveTo(right - aperture.width * .16, seam[4].y + 6);
+      target.lineTo(right - aperture.width * .16, bottom - 4);
+    }
     target.stroke();
 
-    drawHexBolt(target, left + aperture.width * .18, top + aperture.height * .13, radius, .75);
-    drawHexBolt(target, right - aperture.width * .18, top + aperture.height * .13, radius, .75);
-    drawHexBolt(target, left + aperture.width * .18, bottom - aperture.height * .13, radius, .75);
-    drawHexBolt(target, right - aperture.width * .18, bottom - aperture.height * .13, radius, .75);
-    drawBunkerWallText(target, `BAY-${String(bayIndex + 1).padStart(2, '0')}`, aperture.x, top + aperture.height * .13, 'center', .58);
+    const boltY = topPanel ? top + aperture.height * .13 : bottom - aperture.height * .13;
+    drawHexBolt(target, left + aperture.width * .18, boltY, radius, .75);
+    drawHexBolt(target, right - aperture.width * .18, boltY, radius, .75);
+    if (topPanel) {
+      drawBunkerWallText(target, `BAY-${String(bayIndex + 1).padStart(2, '0')}`, aperture.x, boltY, 'center', .58);
+    }
     target.restore();
+  }
 
+  function drawShutterSlit(target, aperture, offsetY, unlockGlow) {
     target.save();
+    drawBunkerAperturePath(target, aperture);
+    target.clip();
+    target.translate(0, offsetY);
     target.globalCompositeOperation = 'destination-out';
     drawShutterSlitPath(target, aperture);
     target.fill();
-    target.restore();
-
-    target.save();
+    target.globalCompositeOperation = 'source-over';
+    if (unlockGlow > 0) {
+      target.fillStyle = 'rgba(0, 255, 0, .24)';
+      target.shadowColor = 'rgba(0, 255, 0, .92)';
+      target.shadowBlur = 18;
+      drawShutterSlitPath(target, aperture);
+      target.fill();
+      target.shadowBlur = 0;
+    }
     drawShutterSlitPath(target, aperture);
     target.strokeStyle = 'rgba(4, 9, 12, .96)';
     target.lineWidth = 4;
     target.stroke();
-    target.strokeStyle = 'rgba(0, 240, 255, .42)';
-    target.lineWidth = 1;
-    target.shadowColor = 'rgba(0, 240, 255, .42)';
-    target.shadowBlur = 6;
+    target.strokeStyle = unlockGlow > 0
+      ? 'rgba(0, 255, 0, .96)'
+      : 'rgba(0, 240, 255, .42)';
+    target.lineWidth = unlockGlow > 0 ? 1.5 : 1;
+    target.shadowColor = unlockGlow > 0 ? 'rgba(0, 255, 0, .95)' : 'rgba(0, 240, 255, .42)';
+    target.shadowBlur = unlockGlow > 0 ? 12 : 6;
     target.stroke();
     target.restore();
+  }
 
+  function drawShutterSeam(target, aperture, seam, offsetY) {
     target.save();
+    drawBunkerAperturePath(target, aperture);
+    target.clip();
+    target.translate(0, offsetY);
     target.lineCap = 'butt';
     target.lineJoin = 'bevel';
     target.beginPath();
@@ -574,7 +605,34 @@
     target.restore();
   }
 
-  function drawBunkerWall() {
+  function drawApertureShutters(target, aperture, bayIndex, openingProgress = 0, unlockGlow = 0) {
+    const seam = getShutterSeamPoints(aperture);
+    const travel = (aperture.height + 26) * easeInOutCubic(openingProgress);
+    const topOffset = -travel;
+    const bottomOffset = travel;
+
+    drawShutterPanel(target, aperture, seam, bayIndex, true, topOffset);
+    drawShutterPanel(target, aperture, seam, bayIndex, false, bottomOffset);
+    drawShutterSlit(target, aperture, topOffset, unlockGlow);
+    drawShutterSeam(target, aperture, seam, topOffset);
+    drawShutterSeam(target, aperture, seam, bottomOffset);
+  }
+
+  function getBulkheadOpeningProgress(bayIndex, time) {
+    const state = bulkheadState.bays[bayIndex];
+    if (!state) return 0;
+    if (!state.isOpening) return state.isOpened ? 1 : 0;
+    const elapsed = time - state.openingStartedAt;
+    const slideElapsed = Math.max(0, elapsed - BULKHEAD_TIMING.unlockDuration);
+    return clamp(slideElapsed / BULKHEAD_TIMING.slideDuration, 0, 1);
+  }
+
+  function getBulkheadUnlockGlow(bayIndex) {
+    const state = bulkheadState.bays[bayIndex];
+    return state && state.isOpening && state.unlockActive ? 1 : 0;
+  }
+
+  function drawBunkerWall(time = performance.now()) {
     if (!bunkerWallCanvas || !bunkerWallCtx || !bunkerWall.cacheWidth) return;
     const width = viewport.width;
     const height = viewport.height;
@@ -584,10 +642,10 @@
     target.globalCompositeOperation = 'source-over';
     target.drawImage(bunkerWallCacheCanvas, 0, 0, width, height);
 
-    const activeIndex = bulkheadState.isOpened ? app.hoveredIndex : app.wallHoveredIndex;
     for (const mini of app.minis) {
+      const bayState = bulkheadState.bays[mini.index];
       const aperture = getBunkerAperture(mini);
-      const active = activeIndex === mini.index;
+      const active = app.wallHoveredIndex === mini.index && !bayState.isOpened && !bayState.isOpening;
       target.save();
       drawBunkerAperturePath(target, aperture, 18);
       target.fillStyle = active ? 'rgba(9, 24, 28, .98)' : 'rgba(13, 18, 22, .98)';
@@ -605,7 +663,15 @@
       target.fill();
       target.restore();
 
-      if (!bulkheadState.isOpened) drawApertureShutters(target, aperture, mini.index);
+      if (!bayState.isOpened) {
+        drawApertureShutters(
+          target,
+          aperture,
+          mini.index,
+          getBulkheadOpeningProgress(mini.index, time),
+          getBulkheadUnlockGlow(mini.index)
+        );
+      }
 
       target.save();
       drawBunkerAperturePath(target, aperture);
@@ -624,6 +690,74 @@
       target.stroke();
       target.restore();
     }
+  }
+
+  function drawBunkerLedFx(time = performance.now()) {
+    if (!bunkerFxCanvas || !bunkerFxCtx) return;
+    const target = bunkerFxCtx;
+    const hasFx = bulkheadState.bays.some((bayState, index) => {
+      const persistent = bayState.isOpened || bayState.isOpening || bayState.ledPersistent;
+      const pulseActive = !persistent && index === app.wallHoveredIndex && time < bayState.wallPulseUntil;
+      return persistent || pulseActive;
+    });
+    if (!hasFx) {
+      if (bunkerFxVisible) {
+        target.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
+        target.clearRect(0, 0, viewport.width, viewport.height);
+        bunkerFxVisible = false;
+      }
+      return;
+    }
+
+    target.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
+    target.clearRect(0, 0, viewport.width, viewport.height);
+    bunkerFxVisible = true;
+
+    for (const mini of app.minis) {
+      const bayState = bulkheadState.bays[mini.index];
+      const persistent = bayState.isOpened || bayState.isOpening || bayState.ledPersistent;
+      const pulseActive = !persistent && mini.index === app.wallHoveredIndex && time < bayState.wallPulseUntil;
+      if (!persistent && !pulseActive) continue;
+      const aperture = getBunkerAperture(mini);
+      const phase = (time * .00072 + mini.index * .17) % 1;
+      const breathe = .56 + Math.sin(time * .006 + mini.index * .8) * .22;
+      target.save();
+      drawBunkerAperturePath(target, aperture, -3);
+      target.strokeStyle = `rgba(0, 240, 255, ${.24 + breathe * .18})`;
+      target.lineWidth = 2;
+      target.shadowColor = 'rgba(0, 240, 255, .72)';
+      target.shadowBlur = 10;
+      target.stroke();
+      target.setLineDash([Math.max(9, aperture.width * .14), Math.max(48, aperture.width * .8)]);
+      target.lineDashOffset = -phase * 140;
+      target.strokeStyle = `rgba(0, 240, 255, ${.48 + breathe * .28})`;
+      target.lineWidth = 1.5;
+      target.shadowBlur = 14;
+      target.stroke();
+      target.setLineDash([]);
+      target.lineDashOffset = 0;
+      target.strokeStyle = `rgba(198, 44, 255, ${.24 + breathe * .18})`;
+      target.lineWidth = 1;
+      target.shadowColor = 'rgba(198, 44, 255, .66)';
+      target.shadowBlur = 8;
+      target.setLineDash([Math.max(6, aperture.width * .09), Math.max(62, aperture.width * .95)]);
+      target.lineDashOffset = phase * 180 + 36;
+      target.stroke();
+      target.restore();
+    }
+  }
+
+  function resizeBunkerFx() {
+    const width = viewport.width;
+    const height = viewport.height;
+    const dpr = viewport.dpr;
+    bunkerFxCanvas.width = Math.round(width * dpr);
+    bunkerFxCanvas.height = Math.round(height * dpr);
+    bunkerFxVisible = false;
+    bunkerFxCanvas.style.width = `${width}px`;
+    bunkerFxCanvas.style.height = `${height}px`;
+    bunkerFxCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawBunkerLedFx();
   }
 
   function resizeBunkerWall() {
@@ -645,6 +779,7 @@
     bunkerWallCacheCtx.clearRect(0, 0, width, height);
     drawBunkerWallSurface(bunkerWallCacheCtx);
     drawBunkerWall();
+    resizeBunkerFx();
   }
 
   function drawStaticBackground(target) {
@@ -1170,19 +1305,70 @@
     lastTime: performance.now(),
   };
 
-  function setBulkheadOpened(isOpened) {
-    const nextState = Boolean(isOpened);
-    if (bulkheadState.isOpened === nextState) return;
-    bulkheadState.isOpened = nextState;
+  function resetHoverState() {
     app.hoveredIndex = -1;
     app.wallHoveredIndex = -1;
     for (const mini of app.minis) mini.hovered = false;
     canvas.classList.remove('is-wall-hovered', 'is-cube-hovered');
+  }
+
+  function setBulkheadOpened(bayIndex, isOpened = true) {
+    if (!Number.isInteger(bayIndex) || !bulkheadState.bays[bayIndex]) return false;
+    const state = bulkheadState.bays[bayIndex];
+    const nextState = Boolean(isOpened);
+    if (state.isOpened === nextState && !state.isOpening) return false;
+    state.isOpened = nextState;
+    state.isOpening = false;
+    state.openingStartedAt = 0;
+    state.unlockActive = false;
+    state.ledPersistent = nextState;
+    state.wallPulseUntil = 0;
+    resetHoverState();
     drawBunkerWall();
+    drawBunkerLedFx();
+    return true;
+  }
+
+  function beginBulkheadOpening(bayIndex, time = performance.now()) {
+    if (!Number.isInteger(bayIndex) || !bulkheadState.bays[bayIndex]) return false;
+    const state = bulkheadState.bays[bayIndex];
+    if (state.isOpened || state.isOpening) return false;
+    state.isOpening = true;
+    state.openingStartedAt = time;
+    state.unlockActive = true;
+    state.ledPersistent = true;
+    state.wallPulseUntil = 0;
+    resetHoverState();
+    drawBunkerWall(time);
+    drawBunkerLedFx(time);
+    return true;
+  }
+
+  function updateBulkheadOpening(time) {
+    const duration = BULKHEAD_TIMING.unlockDuration + BULKHEAD_TIMING.slideDuration;
+    let hasOpening = false;
+    for (const state of bulkheadState.bays) {
+      if (!state.isOpening) continue;
+      hasOpening = true;
+      if (time - state.openingStartedAt >= duration) {
+        state.isOpening = false;
+        state.isOpened = true;
+        state.unlockActive = false;
+        state.ledPersistent = true;
+        state.wallPulseUntil = 0;
+      }
+    }
+    if (hasOpening) drawBunkerWall(time);
   }
 
   window.cubusBulkhead = Object.freeze({
-    get isOpened() { return bulkheadState.isOpened; },
+    get isOpened() { return bulkheadState.bays.every((state) => state.isOpened); },
+    get states() {
+      return bulkheadState.bays.map((state) => ({
+        isOpened: state.isOpened,
+        isOpening: state.isOpening
+      }));
+    },
     setOpened: setBulkheadOpened
   });
 
@@ -1306,35 +1492,46 @@
   }
 
   function hitTestCube(point) {
-    // The transparent slit is visually open but remains physically occluded while closed.
-    if (!bulkheadState.isOpened || !app.interactionEnabled) return -1;
+    if (!app.interactionEnabled) return -1;
     for (let i = app.minis.length - 1; i >= 0; i -= 1) {
+      const bayState = bulkheadState.bays[i];
+      if (!bayState.isOpened || bayState.isOpening) continue;
+      const aperture = getBunkerAperture(app.minis[i]);
+      if (!pointInPolygon(point, getBunkerAperturePoints(aperture, BUNKER_APERTURE_HIT_INSET))) continue;
       if (cubeIsHit(point, app.minis[i].hit, 6)) return i;
     }
     return -1;
   }
 
   function hitTestWall(point) {
-    if (bulkheadState.isOpened || !app.interactionEnabled) return -1;
-    if (point.x < 0 || point.x > viewport.width || point.y < 0 || point.y > viewport.height) return -1;
-
-    const column = clamp(Math.floor(point.x / (viewport.width / 4)), 0, 3);
-    const topAnchor = gridScreenAnchor(column, 0).y;
-    const bottomAnchor = gridScreenAnchor(column, 1).y;
-    const row = Math.abs(point.y - topAnchor) <= Math.abs(point.y - bottomAnchor) ? 0 : 1;
-    return row * 4 + column;
+    if (!app.interactionEnabled) return -1;
+    for (let i = app.minis.length - 1; i >= 0; i -= 1) {
+      const bayState = bulkheadState.bays[i];
+      if (bayState.isOpened || bayState.isOpening) continue;
+      const aperture = getBunkerAperture(app.minis[i]);
+      const innerAperture = getBunkerAperturePoints(aperture, BUNKER_APERTURE_HIT_INSET);
+      if (pointInPolygon(point, innerAperture)) return i;
+    }
+    return -1;
   }
 
   function updateHover() {
-    const nextCube = hitTestCube(app.pointer);
     const nextWall = hitTestWall(app.pointer);
-    const changed = nextCube !== app.hoveredIndex || nextWall !== app.wallHoveredIndex;
+    const nextCube = nextWall >= 0 ? -1 : hitTestCube(app.pointer);
+    const previousWall = app.wallHoveredIndex;
+    const wallChanged = nextWall !== app.wallHoveredIndex;
+    if (nextWall >= 0 && nextWall !== previousWall) {
+      bulkheadState.bays[nextWall].wallPulseUntil = performance.now() + 620;
+    }
     app.hoveredIndex = nextCube;
     app.wallHoveredIndex = nextWall;
-    for (const mini of app.minis) mini.hovered = bulkheadState.isOpened && mini.index === nextCube;
-    canvas.classList.toggle('is-wall-hovered', !bulkheadState.isOpened && nextWall >= 0);
-    canvas.classList.toggle('is-cube-hovered', bulkheadState.isOpened && nextCube >= 0);
-    if (changed) drawBunkerWall();
+    for (const mini of app.minis) {
+      mini.hovered = bulkheadState.bays[mini.index].isOpened && mini.index === nextCube;
+    }
+    canvas.classList.toggle('is-wall-hovered', nextWall >= 0);
+    canvas.classList.toggle('is-cube-hovered', nextCube >= 0);
+    if (wallChanged) drawBunkerWall();
+    drawBunkerLedFx();
   }
 
   function drawCubeLabel(mini) {
@@ -1363,7 +1560,8 @@
   }
 
   function renderMini(mini, time) {
-    const hovered = bulkheadState.isOpened && mini.hovered;
+    const bayState = bulkheadState.bays[mini.index];
+    const hovered = bayState.isOpened && !bayState.isOpening && mini.hovered;
     const glitchActive = glitch.active;
     const frameSeed = glitch.seed + Math.floor(time / 16.6667);
     if (glitchActive) {
@@ -1411,6 +1609,7 @@
     const dt = elapsed / 1000;
     app.lastTime = time;
 
+    updateBulkheadOpening(time);
     updateMinis(dt, time);
     render(time);
     requestAnimationFrame(frame);
@@ -1441,15 +1640,21 @@
     app.pointer = { x: -9999, y: -9999 };
     app.hoveredIndex = -1;
     app.wallHoveredIndex = -1;
+    for (const state of bulkheadState.bays) state.wallPulseUntil = 0;
     for (const mini of app.minis) mini.hovered = false;
     canvas.classList.remove('is-wall-hovered', 'is-cube-hovered');
     drawBunkerWall();
+    drawBunkerLedFx();
   });
 
   canvas.addEventListener('pointerdown', (event) => {
     unlockAllAudio();
-    if (!bulkheadState.isOpened) return;
     app.pointer = pointerPosition(event);
+    const wallHit = hitTestWall(app.pointer);
+    if (wallHit >= 0) {
+      beginBulkheadOpening(wallHit, performance.now());
+      return;
+    }
     const hit = hitTestCube(app.pointer);
     if (typeof hit === 'number') {
       const destination = app.minis[hit].href;
