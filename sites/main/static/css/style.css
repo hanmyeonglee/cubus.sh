@@ -1,8 +1,6 @@
 :root {
   color-scheme: dark;
   --void: #05050e;
-  --signal: #00ff66;
-  --ice: #efffff;
 }
 
 * { box-sizing: border-box; }
@@ -18,9 +16,6 @@ body {
 
 body {
   position: relative;
-  color: var(--ice);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  -webkit-font-smoothing: antialiased;
 }
 
 #scene {
@@ -32,12 +27,9 @@ body {
   outline: none;
   touch-action: none;
   cursor: default;
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
 }
 
-#scene.is-wall-hovered { cursor: pointer; }
+#scene.is-wall-hovered,
 #scene.is-cube-hovered { cursor: pointer; }
 
 #bunker-wall {

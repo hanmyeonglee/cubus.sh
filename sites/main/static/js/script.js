@@ -63,21 +63,9 @@
   const randomSigned = (min, max) => randomBetween(min, max) * (Math.random() < .5 ? -1 : 1);
 
   const vec = (x = 0, y = 0, z = 0) => ({ x, y, z });
-  const add = (a, b) => vec(a.x + b.x, a.y + b.y, a.z + b.z);
-  const scaleVec = (a, scalar) => vec(a.x * scalar, a.y * scalar, a.z * scalar);
-  const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
-  const length = (a) => Math.sqrt(dot(a, a));
-  const normalize = (a) => {
-    const len = length(a) || 1;
-    return scaleVec(a, 1 / len);
-  };
-  const cloneVec = (a) => vec(a.x, a.y, a.z);
+  const CAMERA_POSITION = vec(0, 0, CAMERA_Z);
 
-  const bunkerWall = {
-    cacheWidth: 0,
-    cacheHeight: 0,
-    cacheDpr: 0
-  };
+  let bunkerWallCacheReady = false;
 
   const bulkheadState = {
     bays: Array.from({ length: navItems.length }, () => ({
@@ -85,7 +73,6 @@
       isOpening: false,
       openingStartedAt: 0,
       keypadSequence: [],
-      ledPersistent: false,
       wallPulseUntil: 0
     }))
   };
@@ -95,6 +82,9 @@
     unlockDuration: 400,
     slideDuration: 800
   };
+  const BULKHEAD_TOTAL_DURATION = BULKHEAD_TIMING.keypadDuration +
+    BULKHEAD_TIMING.unlockDuration +
+    BULKHEAD_TIMING.slideDuration;
   const BUNKER_APERTURE_HIT_INSET = -3;
   const KEYPAD_KEY_COUNT = 20;
 
@@ -118,7 +108,13 @@
   function getKeypadPressAmount(state, keyIndex, time) {
     if (!state || !state.isOpening || !state.keypadSequence.length) return 0;
     const elapsed = time - state.openingStartedAt;
-    const key = state.keypadSequence.find((entry) => entry.keyIndex === keyIndex);
+    let key = null;
+    for (const entry of state.keypadSequence) {
+      if (entry.keyIndex === keyIndex) {
+        key = entry;
+        break;
+      }
+    }
     if (!key) return 0;
     const progress = (elapsed - key.start) / key.duration;
     if (progress <= 0 || progress >= 1) return 0;
@@ -128,7 +124,11 @@
   function getKeypadEnteredCount(state, time) {
     if (!state || !state.isOpening || !state.keypadSequence.length) return 0;
     const elapsed = time - state.openingStartedAt;
-    return state.keypadSequence.filter((entry) => elapsed >= entry.start).length;
+    let count = 0;
+    for (const entry of state.keypadSequence) {
+      if (elapsed >= entry.start) count += 1;
+    }
+    return count;
   }
 
   function createRotationCache(rotation) {
@@ -142,8 +142,8 @@
     };
   }
 
-  function rotatePointCached(point, rotation) {
-    let { x, y, z } = point;
+  function getFaceFacing(cube, normal, rotation) {
+    let { x, y, z } = normal;
 
     const rotatedX = x * rotation.cosZ - y * rotation.sinZ;
     const rotatedY = x * rotation.sinZ + y * rotation.cosZ;
@@ -160,7 +160,19 @@
     y = pitchedY;
     z = pitchedZ;
 
-    return vec(x, y, z);
+    const centerX = cube.position.x + x * cube.half;
+    const centerY = cube.position.y + y * cube.half;
+    const centerZ = cube.position.z + z * cube.half;
+    const toCameraX = CAMERA_POSITION.x + centerX * -1;
+    const toCameraY = CAMERA_POSITION.y + centerY * -1;
+    const toCameraZ = CAMERA_POSITION.z + centerZ * -1;
+    const toCameraLength = Math.sqrt(
+      toCameraX * toCameraX + toCameraY * toCameraY + toCameraZ * toCameraZ
+    ) || 1;
+    const inverseLength = 1 / toCameraLength;
+    return x * (toCameraX * inverseLength) +
+      y * (toCameraY * inverseLength) +
+      z * (toCameraZ * inverseLength);
   }
 
   function hashNoise(seed) {
@@ -175,15 +187,16 @@
     centerX: window.innerWidth / 2,
     centerY: window.innerHeight / 2,
     scale: Math.min(window.innerWidth, window.innerHeight) * .30,
+    labelUnit: 1,
+    labelSize: 11,
+    urlSize: 8,
+    fxCyanDash: [9, 48],
+    fxMagentaDash: [6, 62],
     stars: []
   };
 
   const backgroundCache = {
-    canvas: null,
-    context: null,
-    width: 0,
-    height: 0,
-    dpr: 0
+    canvas: null
   };
 
   function rebuildStars() {
@@ -212,15 +225,15 @@
     viewport.centerX = viewport.width / 2;
     viewport.centerY = viewport.height / 2;
     viewport.scale = Math.min(viewport.width, viewport.height) * .30;
+    viewport.labelUnit = clamp(Math.min(viewport.width, viewport.height) / 600, .62, 1.18);
+    viewport.labelSize = clamp(11 * viewport.labelUnit, 8, 13);
+    viewport.urlSize = clamp(8 * viewport.labelUnit, 7, 10);
     canvas.width = Math.round(viewport.width * viewport.dpr);
     canvas.height = Math.round(viewport.height * viewport.dpr);
     canvas.style.width = `${viewport.width}px`;
     canvas.style.height = `${viewport.height}px`;
     ctx.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
     rebuildStars();
-    backgroundCache.width = 0;
-    backgroundCache.height = 0;
-    backgroundCache.dpr = 0;
     rebuildBackgroundCache();
     if (app.minis.length) {
       updateGridTargets();
@@ -228,31 +241,11 @@
     }
   }
 
-  function worldToScreen(point) {
-    const depth = Math.max(.8, CAMERA_Z - point.z);
-    const perspective = CAMERA_FOCAL / depth;
-    return {
-      x: viewport.centerX + point.x * viewport.scale * perspective,
-      y: viewport.centerY - point.y * viewport.scale * perspective,
-      depth
-    };
-  }
-
   function screenToWorld(x, y, z = 0) {
     const depth = Math.max(.8, CAMERA_Z - z);
     const perspective = CAMERA_FOCAL / depth;
     const unit = viewport.scale * perspective;
     return vec((x - viewport.centerX) / unit, -(y - viewport.centerY) / unit, z);
-  }
-
-  function getBunkerAperture(mini) {
-    const anchor = gridScreenAnchor(mini.column, mini.row);
-    const cellWidth = viewport.width / 4;
-    const rowGap = Math.abs(gridScreenAnchor(0, 1).y - gridScreenAnchor(0, 0).y);
-    const width = clamp(cellWidth * .72, 44, 220);
-    const height = clamp(Math.min(viewport.height * .30, rowGap * .78), 104, 250);
-    const cut = clamp(Math.min(width * .2, height * .2), 10, 34);
-    return { x: anchor.x, y: anchor.y, width, height, cut };
   }
 
   function getBunkerAperturePoints(aperture, padding = 0) {
@@ -278,10 +271,24 @@
   }
 
   function drawBunkerAperturePath(target, aperture, padding = 0) {
-    const points = getBunkerAperturePoints(aperture, padding);
+    const width = aperture.width + padding * 2;
+    const height = aperture.height + padding * 2;
+    const cut = clamp(aperture.cut + padding * .18, 8, Math.min(width, height) * .24);
+    const halfWidth = width / 2;
+    const halfHeight = height / 2;
+    const left = aperture.x - halfWidth;
+    const right = aperture.x + halfWidth;
+    const top = aperture.y - halfHeight;
+    const bottom = aperture.y + halfHeight;
     target.beginPath();
-    target.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i += 1) target.lineTo(points[i].x, points[i].y);
+    target.moveTo(left + cut, top);
+    target.lineTo(right - cut, top);
+    target.lineTo(right, top + cut);
+    target.lineTo(right, bottom - cut);
+    target.lineTo(right - cut, bottom);
+    target.lineTo(left + cut, bottom);
+    target.lineTo(left, bottom - cut);
+    target.lineTo(left, top + cut);
     target.closePath();
   }
 
@@ -401,7 +408,7 @@
     target.fillRect(0, height * .935, width, height * .035);
 
     for (const mini of app.minis) {
-      const aperture = getBunkerAperture(mini);
+      const aperture = mini.aperture;
       const platePaddingX = Math.min(34, width * .035);
       const platePaddingY = Math.min(30, height * .035);
       const plateLeft = aperture.x - aperture.width / 2 - platePaddingX;
@@ -481,6 +488,39 @@
     ];
   }
 
+  function getShutterKeypadLayout(aperture) {
+    const keypadWidth = clamp(aperture.width * .16, 18, 48);
+    const keypadHeight = clamp(Math.min(keypadWidth * 1.28, aperture.height * .20), 24, 68);
+    const keypadRight = aperture.x + aperture.width / 2 - aperture.width * .11;
+    const keypadLeft = keypadRight - keypadWidth;
+    const displayHeight = clamp(keypadHeight * .18, 4, 8);
+    const seamSafeTop = aperture.y - aperture.height / 2 + aperture.height * .62;
+    const requestedTop = aperture.y - aperture.height / 2 + aperture.height * .65;
+    const keypadTop = Math.max(requestedTop, seamSafeTop + displayHeight + 6);
+    const deviceCenterX = keypadLeft + keypadWidth / 2;
+    const displayWidth = keypadWidth + 2;
+    const displayLeft = deviceCenterX - displayWidth / 2;
+    const displayTop = keypadTop - displayHeight - 6;
+    const gap = clamp(Math.min(keypadWidth, keypadHeight) * .07, 1.5, 3);
+    const padding = 2;
+    return {
+      keypadWidth,
+      keypadHeight,
+      keypadLeft,
+      keypadTop,
+      displayHeight,
+      deviceCenterX,
+      displayWidth,
+      displayLeft,
+      displayTop,
+      displayFontSize: clamp(displayHeight * 1.15, 5, 8),
+      gap,
+      padding,
+      keyWidth: (keypadWidth - padding * 2 - gap * 3) / 4,
+      keyHeight: (keypadHeight - padding * 2 - gap * 4) / 5
+    };
+  }
+
   function drawShutterPolygon(target, aperture, seam, topPanel) {
     const left = aperture.x - aperture.width / 2;
     const right = aperture.x + aperture.width / 2;
@@ -530,18 +570,23 @@
     const top = aperture.y - aperture.height / 2;
     const bottom = aperture.y + aperture.height / 2;
     const radius = clamp(aperture.width * .035, 1.8, 3.5);
-    const gradient = topPanel
-      ? target.createLinearGradient(0, top, 0, aperture.y)
-      : target.createLinearGradient(0, aperture.y, 0, bottom);
-
-    if (topPanel) {
-      gradient.addColorStop(0, '#4b5050');
-      gradient.addColorStop(.54, '#2d3538');
-      gradient.addColorStop(1, '#171e22');
-    } else {
-      gradient.addColorStop(0, '#20282c');
-      gradient.addColorStop(.48, '#30383a');
-      gradient.addColorStop(1, '#151b1f');
+    const mini = app.minis[bayIndex];
+    const gradientKey = topPanel ? 'top' : 'bottom';
+    let gradient = mini.shutterGradients[gradientKey];
+    if (!gradient) {
+      gradient = topPanel
+        ? target.createLinearGradient(0, top, 0, aperture.y)
+        : target.createLinearGradient(0, aperture.y, 0, bottom);
+      if (topPanel) {
+        gradient.addColorStop(0, '#4b5050');
+        gradient.addColorStop(.54, '#2d3538');
+        gradient.addColorStop(1, '#171e22');
+      } else {
+        gradient.addColorStop(0, '#20282c');
+        gradient.addColorStop(.48, '#30383a');
+        gradient.addColorStop(1, '#151b1f');
+      }
+      mini.shutterGradients[gradientKey] = gradient;
     }
 
     target.save();
@@ -587,24 +632,24 @@
     target.restore();
   }
 
-  function drawShutterKeypad(target, aperture, state, offsetY, time) {
-    const keypadWidth = clamp(aperture.width * .16, 18, 48);
-    const keypadHeight = clamp(Math.min(keypadWidth * 1.28, aperture.height * .20), 24, 68);
-    const keypadRight = aperture.x + aperture.width / 2 - aperture.width * .11;
-    const keypadLeft = keypadRight - keypadWidth;
-    const displayHeight = clamp(keypadHeight * .18, 4, 8);
-    const seamSafeTop = aperture.y - aperture.height / 2 + aperture.height * .62;
-    const requestedTop = aperture.y - aperture.height / 2 + aperture.height * .65;
-    const keypadTop = Math.max(requestedTop, seamSafeTop + displayHeight + 6);
-    const deviceCenterX = keypadLeft + keypadWidth / 2;
-    const displayWidth = keypadWidth + 2;
-    const displayLeft = deviceCenterX - displayWidth / 2;
-    const displayTop = keypadTop - displayHeight - 6;
+  function drawShutterKeypad(target, aperture, state, offsetY, time, layout) {
+    const {
+      keypadWidth,
+      keypadHeight,
+      keypadLeft,
+      keypadTop,
+      displayHeight,
+      deviceCenterX,
+      displayWidth,
+      displayLeft,
+      displayTop,
+      displayFontSize,
+      gap,
+      padding,
+      keyWidth,
+      keyHeight
+    } = layout;
     const enteredCount = getKeypadEnteredCount(state, time);
-    const gap = clamp(Math.min(keypadWidth, keypadHeight) * .07, 1.5, 3);
-    const padding = 2;
-    const keyWidth = (keypadWidth - padding * 2 - gap * 3) / 4;
-    const keyHeight = (keypadHeight - padding * 2 - gap * 4) / 5;
 
     target.save();
     drawBunkerAperturePath(target, aperture);
@@ -631,7 +676,7 @@
     target.lineTo(displayLeft + displayWidth - 1, displayTop + displayHeight - 1);
     target.stroke();
     if (enteredCount > 0) {
-      target.font = `${clamp(displayHeight * 1.15, 5, 8)}px ${FONT_STACK}`;
+      target.font = `${displayFontSize}px ${FONT_STACK}`;
       target.textAlign = 'center';
       target.textBaseline = 'middle';
       target.fillStyle = '#00ff00';
@@ -725,14 +770,15 @@
   }
 
   function drawApertureShutters(target, aperture, bayIndex, openingProgress = 0, unlockGlow = 0, time = 0) {
-    const seam = getShutterSeamPoints(aperture);
+    const mini = app.minis[bayIndex];
+    const seam = mini.shutterSeam;
     const travel = (aperture.height + 26) * easeInOutCubic(openingProgress);
     const topOffset = -travel;
     const bottomOffset = travel;
 
     drawShutterPanel(target, aperture, seam, bayIndex, true, topOffset);
     drawShutterPanel(target, aperture, seam, bayIndex, false, bottomOffset);
-    drawShutterKeypad(target, aperture, bulkheadState.bays[bayIndex], bottomOffset, time);
+    drawShutterKeypad(target, aperture, bulkheadState.bays[bayIndex], bottomOffset, time, mini.keypadLayout);
     drawShutterSlit(target, aperture, topOffset, unlockGlow);
     drawShutterSeam(target, aperture, seam, topOffset);
     drawShutterSeam(target, aperture, seam, bottomOffset);
@@ -759,7 +805,7 @@
   }
 
   function drawBunkerWall(time = performance.now()) {
-    if (!bunkerWallCanvas || !bunkerWallCtx || !bunkerWall.cacheWidth) return;
+    if (!bunkerWallCacheReady) return;
     const width = viewport.width;
     const height = viewport.height;
     const target = bunkerWallCtx;
@@ -770,7 +816,7 @@
 
     for (const mini of app.minis) {
       const bayState = bulkheadState.bays[mini.index];
-      const aperture = getBunkerAperture(mini);
+      const aperture = mini.aperture;
       const active = app.wallHoveredIndex === mini.index && !bayState.isOpened && !bayState.isOpening;
       target.save();
       drawBunkerAperturePath(target, aperture, 18);
@@ -820,10 +866,9 @@
   }
 
   function drawBunkerLedFx(time = performance.now()) {
-    if (!bunkerFxCanvas || !bunkerFxCtx) return;
     const target = bunkerFxCtx;
     const hasFx = bulkheadState.bays.some((bayState, index) => {
-      const persistent = bayState.isOpened || bayState.isOpening || bayState.ledPersistent;
+      const persistent = bayState.isOpened || bayState.isOpening;
       const pulseActive = !persistent && index === app.wallHoveredIndex && time < bayState.wallPulseUntil;
       return persistent || pulseActive;
     });
@@ -842,10 +887,10 @@
 
     for (const mini of app.minis) {
       const bayState = bulkheadState.bays[mini.index];
-      const persistent = bayState.isOpened || bayState.isOpening || bayState.ledPersistent;
+      const persistent = bayState.isOpened || bayState.isOpening;
       const pulseActive = !persistent && mini.index === app.wallHoveredIndex && time < bayState.wallPulseUntil;
       if (!persistent && !pulseActive) continue;
-      const aperture = getBunkerAperture(mini);
+      const aperture = mini.aperture;
       const phase = (time * .00072 + mini.index * .17) % 1;
       const breathe = .56 + Math.sin(time * .006 + mini.index * .8) * .22;
       target.save();
@@ -855,7 +900,7 @@
       target.shadowColor = 'rgba(0, 240, 255, .72)';
       target.shadowBlur = 10;
       target.stroke();
-      target.setLineDash([Math.max(9, aperture.width * .14), Math.max(48, aperture.width * .8)]);
+      target.setLineDash(viewport.fxCyanDash);
       target.lineDashOffset = -phase * 140;
       target.strokeStyle = `rgba(0, 240, 255, ${.48 + breathe * .28})`;
       target.lineWidth = 1.5;
@@ -867,7 +912,7 @@
       target.lineWidth = 1;
       target.shadowColor = 'rgba(198, 44, 255, .66)';
       target.shadowBlur = 8;
-      target.setLineDash([Math.max(6, aperture.width * .09), Math.max(62, aperture.width * .95)]);
+      target.setLineDash(viewport.fxMagentaDash);
       target.lineDashOffset = phase * 180 + 36;
       target.stroke();
       target.restore();
@@ -900,9 +945,7 @@
     bunkerWallCacheCanvas.height = Math.round(height * dpr);
     bunkerWallCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     bunkerWallCacheCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    bunkerWall.cacheWidth = width;
-    bunkerWall.cacheHeight = height;
-    bunkerWall.cacheDpr = dpr;
+    bunkerWallCacheReady = true;
     bunkerWallCacheCtx.clearRect(0, 0, width, height);
     drawBunkerWallSurface(bunkerWallCacheCtx);
     drawBunkerWall();
@@ -966,28 +1009,17 @@
   function rebuildBackgroundCache() {
     const width = canvas.width;
     const height = canvas.height;
-    if (backgroundCache.canvas &&
-        backgroundCache.width === width &&
-        backgroundCache.height === height &&
-        backgroundCache.dpr === viewport.dpr) {
-      return;
-    }
-
     if (!backgroundCache.canvas) backgroundCache.canvas = document.createElement('canvas');
     backgroundCache.canvas.width = width;
     backgroundCache.canvas.height = height;
-    backgroundCache.context = backgroundCache.canvas.getContext('2d', { alpha: false });
-    backgroundCache.context.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
-    drawStaticBackground(backgroundCache.context);
-    backgroundCache.width = width;
-    backgroundCache.height = height;
-    backgroundCache.dpr = viewport.dpr;
+    const context = backgroundCache.canvas.getContext('2d', { alpha: false });
+    context.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
+    drawStaticBackground(context);
   }
 
   function drawBackground(time) {
     const w = viewport.width;
     const h = viewport.height;
-    rebuildBackgroundCache();
 
     ctx.save();
     ctx.globalAlpha = 1;
@@ -1099,39 +1131,118 @@
       const endIndex = pointIndex(end);
       segments.push([startIndex, tipIndex], [tipIndex, endIndex]);
     }
-    return { points, segments };
+    return {
+      points,
+      segments,
+      projected: points.map(() => ({ x: 0, y: 0 }))
+    };
   }
 
   for (const face of faceDefs) face.textureGeometry = buildFaceTextureGeometry(face);
 
-  function transformedVertices(cube, options, rotation) {
-    const vertexJitter = options.vertexJitter || 0;
-    const seed = options.seed || 0;
-    return cubeVertices.map((vertex, index) => {
-      let local = scaleVec(vertex, cube.half);
-      if (vertexJitter) {
-        local = add(local, vec(
-          hashNoise(seed + index * 17.11) * vertexJitter,
-          hashNoise(seed + index * 29.37 + 11) * vertexJitter,
-          hashNoise(seed + index * 43.73 + 23) * vertexJitter
-        ));
-      }
-      return add(cube.position, rotatePointCached(local, rotation));
-    });
+  function createCubeRenderGeometry(includeFaces = true) {
+    const worldVertices = cubeVertices.map(() => vec());
+    const projectedVertices = cubeVertices.map(() => ({ x: 0, y: 0 }));
+    if (!includeFaces) return { worldVertices, projectedVertices };
+
+    const faceItems = faceDefs.map((face) => ({
+      face,
+      points: face.vertices.map((index) => projectedVertices[index]),
+      facing: 0,
+      depth: 0
+    }));
+    const projectedFaces = faceItems.slice();
+    const bounds = { left: 0, right: 0, top: 0, bottom: 0 };
+    return {
+      worldVertices,
+      projectedVertices,
+      faceItems,
+      projectedFaces,
+      bounds,
+      hit: { faces: projectedFaces, bounds }
+    };
   }
 
-  function makeProjectedPoint(cube, localPoint, options, rotation) {
-    const world = add(cube.position, rotatePointCached(scaleVec(localPoint, cube.half), rotation));
-    const projected = worldToScreen(world);
-    projected.x += options.offsetX || 0;
-    projected.y += options.offsetY || 0;
-    projected.world = world;
-    return projected;
+  const wireRenderGeometry = createCubeRenderGeometry(false);
+
+  function transformedVertices(cube, options, rotation, target) {
+    const vertexJitter = options.vertexJitter || 0;
+    const seed = options.seed || 0;
+    for (let index = 0; index < cubeVertices.length; index += 1) {
+      const vertex = cubeVertices[index];
+      let x = vertex.x * cube.half;
+      let y = vertex.y * cube.half;
+      let z = vertex.z * cube.half;
+      if (vertexJitter) {
+        x += hashNoise(seed + index * 17.11) * vertexJitter;
+        y += hashNoise(seed + index * 29.37 + 11) * vertexJitter;
+        z += hashNoise(seed + index * 43.73 + 23) * vertexJitter;
+      }
+
+      const rotatedX = x * rotation.cosZ - y * rotation.sinZ;
+      const rotatedY = x * rotation.sinZ + y * rotation.cosZ;
+      x = rotatedX;
+      y = rotatedY;
+
+      const yawedX = x * rotation.cosY + z * rotation.sinY;
+      const yawedZ = -x * rotation.sinY + z * rotation.cosY;
+      x = yawedX;
+      z = yawedZ;
+
+      const pitchedY = y * rotation.cosX - z * rotation.sinX;
+      const pitchedZ = y * rotation.sinX + z * rotation.cosX;
+      y = pitchedY;
+      z = pitchedZ;
+
+      target[index].x = cube.position.x + x;
+      target[index].y = cube.position.y + y;
+      target[index].z = cube.position.z + z;
+    }
+    return target;
+  }
+
+  function projectVertices(worldVertices, options, target) {
+    for (let index = 0; index < worldVertices.length; index += 1) {
+      const world = worldVertices[index];
+      const depth = Math.max(.8, CAMERA_Z - world.z);
+      const perspective = CAMERA_FOCAL / depth;
+      target[index].x = viewport.centerX + world.x * viewport.scale * perspective + options.offsetX;
+      target[index].y = viewport.centerY - world.y * viewport.scale * perspective + options.offsetY;
+    }
+    return target;
+  }
+
+  function projectFaceTexturePoint(cube, localPoint, options, rotation, projected) {
+    let x = localPoint.x * cube.half;
+    let y = localPoint.y * cube.half;
+    let z = localPoint.z * cube.half;
+
+    const rotatedX = x * rotation.cosZ - y * rotation.sinZ;
+    const rotatedY = x * rotation.sinZ + y * rotation.cosZ;
+    x = rotatedX;
+    y = rotatedY;
+
+    const yawedX = x * rotation.cosY + z * rotation.sinY;
+    const yawedZ = -x * rotation.sinY + z * rotation.cosY;
+    x = yawedX;
+    z = yawedZ;
+
+    const pitchedY = y * rotation.cosX - z * rotation.sinX;
+    const pitchedZ = y * rotation.sinX + z * rotation.cosX;
+    y = pitchedY;
+    z = pitchedZ;
+
+    const worldX = cube.position.x + x;
+    const worldY = cube.position.y + y;
+    const worldZ = cube.position.z + z;
+    const depth = Math.max(.8, CAMERA_Z - worldZ);
+    const perspective = CAMERA_FOCAL / depth;
+    projected.x = viewport.centerX + worldX * viewport.scale * perspective + (options.offsetX || 0);
+    projected.y = viewport.centerY - worldY * viewport.scale * perspective + (options.offsetY || 0);
   }
 
   function strokeProjectedPath(points, color, width, alpha = 1, glow = 0, closed = false) {
     if (!points.length) return;
-    ctx.save();
     ctx.globalAlpha = alpha;
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
@@ -1144,16 +1255,17 @@
     for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
     if (closed) ctx.closePath();
     ctx.stroke();
-    ctx.restore();
   }
 
   function drawFaceTexture(cube, face, options, facing, rotation) {
     const visibility = clamp(.38 + facing * .62, .12, 1);
-    const alpha = (options.textureAlpha ?? 1) * visibility;
+    const alpha = clamp((options.textureAlpha ?? 1) * visibility, 0, 1);
     const geometry = face.textureGeometry;
-    const projected = geometry.points.map((point) => makeProjectedPoint(cube, point, options, rotation));
+    const projected = geometry.projected;
+    for (let i = 0; i < geometry.points.length; i += 1) {
+      projectFaceTexturePoint(cube, geometry.points[i], options, rotation, projected[i]);
+    }
 
-    ctx.save();
     ctx.globalAlpha = alpha;
     ctx.strokeStyle = VECTOR_COLOR;
     ctx.lineWidth = Math.max(.72, cube.half * 2.15);
@@ -1167,10 +1279,27 @@
       ctx.lineTo(projected[to].x, projected[to].y);
     }
     ctx.stroke();
+  }
+
+  function drawCubeEdges(cube, settings, projectedVertices) {
+    ctx.save();
+    ctx.globalAlpha = clamp(settings.edgeAlpha, 0, 1);
+    ctx.strokeStyle = settings.edgeColor;
+    ctx.lineWidth = Math.max(.8, cube.half * 1.35);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.shadowColor = settings.edgeColor;
+    ctx.shadowBlur = (settings.edgeColor === EDGE_COLOR ? Math.max(5, cube.half * 5.2) : Math.max(3, cube.half * 3)) * settings.edgeGlow;
+    ctx.beginPath();
+    for (const [from, to] of cubeEdges) {
+      ctx.moveTo(projectedVertices[from].x, projectedVertices[from].y);
+      ctx.lineTo(projectedVertices[to].x, projectedVertices[to].y);
+    }
+    ctx.stroke();
     ctx.restore();
   }
 
-  function renderCube(cube, options = {}) {
+  function renderCube(cube, options = {}, rotationCache = null) {
     const settings = {
       seed: 0,
       vertexJitter: 0,
@@ -1189,86 +1318,67 @@
       ...options
     };
 
-    const rotation = createRotationCache(cube.rotation);
-    const worldVertices = transformedVertices(cube, settings, rotation);
-    const projectedVertices = worldVertices.map((world) => {
-      const projected = worldToScreen(world);
-      projected.x += settings.offsetX;
-      projected.y += settings.offsetY;
-      projected.world = world;
-      return projected;
-    });
+    const rotation = rotationCache || createRotationCache(cube.rotation);
+    const geometry = settings.wireOnly
+      ? wireRenderGeometry
+      : cube.renderGeometry || (cube.renderGeometry = createCubeRenderGeometry());
+    const worldVertices = transformedVertices(cube, settings, rotation, geometry.worldVertices);
+    const projectedVertices = projectVertices(worldVertices, settings, geometry.projectedVertices);
 
-    const cameraPosition = vec(0, 0, CAMERA_Z);
-    const projectedFaces = faceDefs.map((face) => {
-      const normal = rotatePointCached(face.normal, rotation);
-      const center = add(cube.position, scaleVec(normal, cube.half));
-      const toCamera = normalize(add(cameraPosition, scaleVec(center, -1)));
-      const facing = dot(normal, toCamera);
-      const points = face.vertices.map((index) => projectedVertices[index]);
-      return {
-        face,
-        points,
-        facing,
-        depth: points.reduce((sum, point) => sum + point.world.z, 0) / points.length
-      };
-    });
+    if (settings.wireOnly) {
+      drawCubeEdges(cube, settings, projectedVertices);
+      return null;
+    }
+
+    const projectedFaces = geometry.projectedFaces;
+    for (let index = 0; index < geometry.faceItems.length; index += 1) {
+      projectedFaces[index] = geometry.faceItems[index];
+    }
+    for (const item of projectedFaces) {
+      const face = item.face;
+      item.facing = getFaceFacing(cube, face.normal, rotation);
+      item.depth = face.vertices.reduce((sum, vertexIndex) => sum + worldVertices[vertexIndex].z, 0) /
+        face.vertices.length;
+    }
 
     projectedFaces.sort((a, b) => a.depth - b.depth);
 
-    if (!settings.wireOnly) {
-      ctx.save();
-      ctx.fillStyle = FACE_COLOR;
-      for (const item of projectedFaces) {
-        const faceAlpha = settings.fillAlpha * clamp(.13 + Math.max(0, item.facing) * .22, .10, .36);
-        ctx.globalAlpha = faceAlpha;
-        ctx.beginPath();
-        ctx.moveTo(item.points[0].x, item.points[0].y);
-        for (let i = 1; i < item.points.length; i += 1) ctx.lineTo(item.points[i].x, item.points[i].y);
-        ctx.closePath();
-        ctx.fill();
-      }
-      ctx.restore();
-
-      for (const item of projectedFaces) {
-        const localAlpha = settings.textureAlpha * clamp(.24 + Math.max(0, item.facing) * .76, .2, 1);
-        drawFaceTexture(cube, item.face, settings, item.facing, rotation);
-
-        strokeProjectedPath(
-          item.points,
-          settings.faceOutlineColor,
-          Math.max(.45, cube.half * .48) * settings.faceOutlineScale,
-          localAlpha * settings.faceOutlineAlpha,
-          settings.faceGlow,
-          true
-        );
-      }
-    }
-
     ctx.save();
-    ctx.globalAlpha = settings.edgeAlpha;
-    ctx.strokeStyle = settings.edgeColor;
-    ctx.lineWidth = Math.max(.8, cube.half * 1.35);
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.shadowColor = settings.edgeColor;
-    ctx.shadowBlur = (settings.edgeColor === EDGE_COLOR ? Math.max(5, cube.half * 5.2) : Math.max(3, cube.half * 3)) * settings.edgeGlow;
-    ctx.beginPath();
-    for (const [from, to] of cubeEdges) {
-      ctx.moveTo(projectedVertices[from].x, projectedVertices[from].y);
-      ctx.lineTo(projectedVertices[to].x, projectedVertices[to].y);
+    ctx.fillStyle = FACE_COLOR;
+    for (const item of projectedFaces) {
+      const faceAlpha = settings.fillAlpha * clamp(.13 + Math.max(0, item.facing) * .22, .10, .36);
+      ctx.globalAlpha = faceAlpha;
+      ctx.beginPath();
+      ctx.moveTo(item.points[0].x, item.points[0].y);
+      for (let i = 1; i < item.points.length; i += 1) ctx.lineTo(item.points[i].x, item.points[i].y);
+      ctx.closePath();
+      ctx.fill();
     }
-    ctx.stroke();
     ctx.restore();
 
-    return {
-      vertices: projectedVertices,
-      faces: projectedFaces,
-      bounds: getBounds(projectedVertices)
-    };
+    ctx.save();
+    for (const item of projectedFaces) {
+      const localAlpha = settings.textureAlpha * clamp(.24 + Math.max(0, item.facing) * .76, .2, 1);
+      drawFaceTexture(cube, item.face, settings, item.facing, rotation);
+
+      strokeProjectedPath(
+        item.points,
+        settings.faceOutlineColor,
+        Math.max(.45, cube.half * .48) * settings.faceOutlineScale,
+        localAlpha * settings.faceOutlineAlpha,
+        settings.faceGlow,
+        true
+      );
+    }
+    ctx.restore();
+
+    drawCubeEdges(cube, settings, projectedVertices);
+
+    updateBounds(projectedVertices, geometry.bounds);
+    return geometry.hit;
   }
 
-  function getBounds(points) {
+  function updateBounds(points, bounds) {
     let left = Infinity;
     let right = -Infinity;
     let top = Infinity;
@@ -1279,11 +1389,13 @@
       if (point.y < top) top = point.y;
       if (point.y > bottom) bottom = point.y;
     }
-    return { left, right, top, bottom };
+    bounds.left = left;
+    bounds.right = right;
+    bounds.top = top;
+    bounds.bottom = bottom;
   }
 
   const glitch = {
-    enabled: true,
     active: false,
     startedAt: 0,
     duration: 0,
@@ -1361,12 +1473,11 @@
     }
 
     const index = chooseStaticGlitchIndex();
-    const clip = clips[index];
+      const clip = clips[index];
     try {
 
       clip.pause();
       clip.currentTime = 0;
-      clip.volume = STATIC_GLITCH_VOLUME;
       const playback = clip.play();
       if (playback && typeof playback.catch === 'function') {
         playback.catch((error) => {
@@ -1454,14 +1565,17 @@
       oscillator.stop(start + .07);
       metallicOscillator.stop(start + .05);
       return true;
-    } catch (error) {
+    } catch {
       return false;
     }
   }
 
   function updateKeypadAudio(state, elapsed) {
     if (elapsed > BULKHEAD_TIMING.keypadDuration) {
-      for (const key of state.keypadSequence) key.played = true;
+      const lastKey = state.keypadSequence[state.keypadSequence.length - 1];
+      if (lastKey && !lastKey.played) {
+        for (const key of state.keypadSequence) key.played = true;
+      }
       return;
     }
     for (const key of state.keypadSequence) {
@@ -1472,7 +1586,6 @@
   }
 
   function startGlitch(time) {
-    if (!glitch.enabled) return;
     glitch.active = true;
     glitch.startedAt = time;
     glitch.duration = randomBetween(100, 200);
@@ -1485,12 +1598,6 @@
   }
 
   function updateGlitch(time) {
-    if (!glitch.enabled) {
-      glitch.active = false;
-      glitch.intensity = 0;
-      glitch.audioPlayed = false;
-      return;
-    }
     if (!glitch.active && time >= glitch.nextAt) startGlitch(time);
     if (glitch.active) {
       const elapsed = time - glitch.startedAt;
@@ -1506,10 +1613,9 @@
   }
 
   const app = {
-    state: 'grid',
-    interactionEnabled: true,
     hoveredIndex: -1,
     wallHoveredIndex: -1,
+    pointerActive: false,
     pointer: { x: -9999, y: -9999 },
     minis: [],
     lastTime: performance.now(),
@@ -1531,7 +1637,6 @@
     state.isOpening = false;
     state.openingStartedAt = 0;
     state.keypadSequence = [];
-    state.ledPersistent = nextState;
     state.wallPulseUntil = 0;
     resetHoverState();
     drawBunkerWall();
@@ -1546,7 +1651,6 @@
     state.isOpening = true;
     state.openingStartedAt = time;
     state.keypadSequence = createKeypadSequence();
-    state.ledPersistent = true;
     state.wallPulseUntil = 0;
     resetHoverState();
     drawBunkerWall(time);
@@ -1555,20 +1659,16 @@
   }
 
   function updateBulkheadOpening(time) {
-    const duration = BULKHEAD_TIMING.keypadDuration +
-      BULKHEAD_TIMING.unlockDuration +
-      BULKHEAD_TIMING.slideDuration;
     let hasOpening = false;
     for (const state of bulkheadState.bays) {
       if (!state.isOpening) continue;
       hasOpening = true;
       const elapsed = time - state.openingStartedAt;
       updateKeypadAudio(state, elapsed);
-      if (time - state.openingStartedAt >= duration) {
+      if (elapsed >= BULKHEAD_TOTAL_DURATION) {
         state.isOpening = false;
         state.isOpened = true;
         state.keypadSequence = [];
-        state.ledPersistent = true;
         state.wallPulseUntil = 0;
       }
     }
@@ -1599,8 +1699,13 @@
       depth,
       label: navItems[index].label,
       href: navItems[index].href,
-      targetPosition: vec(),
       position: vec(),
+      aperture: null,
+      apertureHitPoints: null,
+      shutterSeam: null,
+      keypadLayout: null,
+      shutterGradients: { top: null, bottom: null },
+      renderGeometry: createCubeRenderGeometry(),
       half: MINI_GRID_HALF,
       rotation: {
         x: randomBetween(-.72, .72),
@@ -1635,10 +1740,27 @@
   }
 
   function updateGridTargets() {
+    const cellWidth = viewport.width / 4;
+    const rowGap = Math.abs(gridScreenAnchor(0, 1).y - gridScreenAnchor(0, 0).y);
+    const apertureWidth = clamp(cellWidth * .72, 44, 220);
+    const apertureHeight = clamp(Math.min(viewport.height * .30, rowGap * .78), 104, 250);
+    const apertureCut = clamp(Math.min(apertureWidth * .2, apertureHeight * .2), 10, 34);
+    viewport.fxCyanDash = [Math.max(9, apertureWidth * .14), Math.max(48, apertureWidth * .8)];
+    viewport.fxMagentaDash = [Math.max(6, apertureWidth * .09), Math.max(62, apertureWidth * .95)];
     for (const mini of app.minis) {
       const anchor = gridScreenAnchor(mini.column, mini.row);
-      mini.targetPosition = screenToWorld(anchor.x, anchor.y, mini.depth);
-      mini.position = cloneVec(mini.targetPosition);
+      mini.position = screenToWorld(anchor.x, anchor.y, mini.depth);
+      mini.aperture = {
+        x: anchor.x,
+        y: anchor.y,
+        width: apertureWidth,
+        height: apertureHeight,
+        cut: apertureCut
+      };
+      mini.apertureHitPoints = getBunkerAperturePoints(mini.aperture, BUNKER_APERTURE_HIT_INSET);
+      mini.shutterSeam = getShutterSeamPoints(mini.aperture);
+      mini.keypadLayout = getShutterKeypadLayout(mini.aperture);
+      mini.shutterGradients = { top: null, bottom: null };
     }
   }
 
@@ -1659,22 +1781,22 @@
   }
 
   function updateMinis(dt, time) {
+    const smoothing = 1 - Math.pow(.002, dt);
     for (const mini of app.minis) {
-      let targetVelocity = mini.velocityTarget;
+      let targetVelocityX = mini.velocityTarget.x;
+      let targetVelocityY = mini.velocityTarget.y;
+      let targetVelocityZ = mini.velocityTarget.z;
       if (mini.rotationBoost) {
         const progress = clamp((time - mini.rotationBoost.startedAt) / mini.rotationBoost.duration, 0, 1);
         const decay = 1 - easeInOutCubic(progress);
-        targetVelocity = {
-          x: lerp(mini.velocityTarget.x, mini.rotationBoost.burstVelocity.x, decay),
-          y: lerp(mini.velocityTarget.y, mini.rotationBoost.burstVelocity.y, decay),
-          z: lerp(mini.velocityTarget.z, mini.rotationBoost.burstVelocity.z, decay)
-        };
+        targetVelocityX = lerp(mini.velocityTarget.x, mini.rotationBoost.burstVelocity.x, decay);
+        targetVelocityY = lerp(mini.velocityTarget.y, mini.rotationBoost.burstVelocity.y, decay);
+        targetVelocityZ = lerp(mini.velocityTarget.z, mini.rotationBoost.burstVelocity.z, decay);
         if (progress >= 1) mini.rotationBoost = null;
       }
-      const smoothing = 1 - Math.pow(.002, dt);
-      mini.velocity.x = lerp(mini.velocity.x, targetVelocity.x, smoothing);
-      mini.velocity.y = lerp(mini.velocity.y, targetVelocity.y, smoothing);
-      mini.velocity.z = lerp(mini.velocity.z, targetVelocity.z, smoothing);
+      mini.velocity.x = lerp(mini.velocity.x, targetVelocityX, smoothing);
+      mini.velocity.y = lerp(mini.velocity.y, targetVelocityY, smoothing);
+      mini.velocity.z = lerp(mini.velocity.z, targetVelocityZ, smoothing);
       mini.rotation.x += mini.velocity.x * dt;
       mini.rotation.y += mini.velocity.y * dt;
       mini.rotation.z += mini.velocity.z * dt;
@@ -1706,44 +1828,42 @@
   }
 
   function hitTestCube(point) {
-    if (!app.interactionEnabled) return -1;
     for (let i = app.minis.length - 1; i >= 0; i -= 1) {
       const bayState = bulkheadState.bays[i];
       if (!bayState.isOpened || bayState.isOpening) continue;
-      const aperture = getBunkerAperture(app.minis[i]);
-      if (!pointInPolygon(point, getBunkerAperturePoints(aperture, BUNKER_APERTURE_HIT_INSET))) continue;
+      if (!pointInPolygon(point, app.minis[i].apertureHitPoints)) continue;
       if (cubeIsHit(point, app.minis[i].hit, 6)) return i;
     }
     return -1;
   }
 
   function hitTestWall(point) {
-    if (!app.interactionEnabled) return -1;
     for (let i = app.minis.length - 1; i >= 0; i -= 1) {
       const bayState = bulkheadState.bays[i];
       if (bayState.isOpened || bayState.isOpening) continue;
-      const aperture = getBunkerAperture(app.minis[i]);
-      const innerAperture = getBunkerAperturePoints(aperture, BUNKER_APERTURE_HIT_INSET);
-      if (pointInPolygon(point, innerAperture)) return i;
+      if (pointInPolygon(point, app.minis[i].apertureHitPoints)) return i;
     }
     return -1;
   }
 
   function updateHover() {
-    const nextWall = hitTestWall(app.pointer);
-    const nextCube = nextWall >= 0 ? -1 : hitTestCube(app.pointer);
+    const nextWall = app.pointerActive ? hitTestWall(app.pointer) : -1;
+    const nextCube = app.pointerActive && nextWall < 0 ? hitTestCube(app.pointer) : -1;
     const previousWall = app.wallHoveredIndex;
-    const wallChanged = nextWall !== app.wallHoveredIndex;
+    const previousCube = app.hoveredIndex;
+    const wallChanged = nextWall !== previousWall;
+    const cubeChanged = nextCube !== app.hoveredIndex;
     if (nextWall >= 0 && nextWall !== previousWall) {
       bulkheadState.bays[nextWall].wallPulseUntil = performance.now() + 620;
     }
     app.hoveredIndex = nextCube;
     app.wallHoveredIndex = nextWall;
-    for (const mini of app.minis) {
-      mini.hovered = bulkheadState.bays[mini.index].isOpened && mini.index === nextCube;
+    if (cubeChanged) {
+      if (previousCube >= 0) app.minis[previousCube].hovered = false;
+      if (nextCube >= 0) app.minis[nextCube].hovered = true;
     }
-    canvas.classList.toggle('is-wall-hovered', nextWall >= 0);
-    canvas.classList.toggle('is-cube-hovered', nextCube >= 0);
+    if (wallChanged) canvas.classList.toggle('is-wall-hovered', nextWall >= 0);
+    if (cubeChanged) canvas.classList.toggle('is-cube-hovered', nextCube >= 0);
     if (wallChanged) drawBunkerWall();
     drawBunkerLedFx();
   }
@@ -1752,34 +1872,29 @@
     if (!mini.hit) return;
     const centerX = (mini.hit.bounds.left + mini.hit.bounds.right) / 2;
     const bottom = mini.hit.bounds.bottom;
-    const unit = clamp(Math.min(viewport.width, viewport.height) / 600, .62, 1.18);
-    const labelSize = clamp(11 * unit, 8, 13);
-    const urlSize = clamp(8 * unit, 7, 10);
-    const labelY = bottom + 23 * unit;
-    const urlY = labelY + 13 * unit;
+    const labelY = bottom + 23 * viewport.labelUnit;
+    const urlY = labelY + 13 * viewport.labelUnit;
 
-    ctx.save();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = `600 ${labelSize}px ${FONT_STACK}`;
+    ctx.font = `600 ${viewport.labelSize}px ${FONT_STACK}`;
     ctx.fillStyle = 'rgba(227, 255, 246, .78)';
     ctx.shadowColor = 'rgba(0, 255, 102, .28)';
     ctx.shadowBlur = 5;
     ctx.fillText(mini.label, centerX, labelY);
     ctx.shadowBlur = 0;
-    ctx.font = `${urlSize}px ${FONT_STACK}`;
+    ctx.font = `${viewport.urlSize}px ${FONT_STACK}`;
     ctx.fillStyle = 'rgba(0, 255, 102, .53)';
     ctx.fillText(mini.href, centerX, urlY);
-    ctx.restore();
   }
 
-  function renderMini(mini, time) {
+  function renderMini(mini, time, frameSeed) {
     const bayState = bulkheadState.bays[mini.index];
     const hovered = bayState.isOpened && !bayState.isOpening && mini.hovered;
     const unlockGlow = getBulkheadUnlockGlow(mini.index, time);
     const unlockHighlight = unlockGlow > .02;
     const glitchActive = glitch.active;
-    const frameSeed = glitch.seed + Math.floor(time / 16.6667);
+    const rotation = createRotationCache(mini.rotation);
     if (glitchActive) {
       renderCube(mini, {
         wireOnly: true,
@@ -1789,7 +1904,7 @@
         offsetY: .8 * glitch.intensity,
         vertexJitter: .075 * glitch.intensity,
         seed: frameSeed + mini.index * 9
-      });
+      }, rotation);
       renderCube(mini, {
         wireOnly: true,
         edgeColor: GLITCH_CYAN,
@@ -1798,7 +1913,7 @@
         offsetY: -.8 * glitch.intensity,
         vertexJitter: .07 * glitch.intensity,
         seed: frameSeed + mini.index * 11 + 29
-      });
+      }, rotation);
     }
     mini.hit = renderCube(mini, {
       vertexJitter: glitchActive ? .06 * glitch.intensity : 0,
@@ -1807,15 +1922,18 @@
       edgeColor: unlockHighlight ? '#00ff00' : hovered ? '#ffffff' : EDGE_COLOR,
       fillAlpha: unlockHighlight ? 1.02 + unlockGlow * .14 : hovered ? 1.16 : .88,
       textureAlpha: unlockHighlight ? 1.02 + unlockGlow * .16 : hovered ? 1.18 : .82
-    });
+    }, rotation);
   }
 
   function render(time) {
     drawBackground(time);
     updateGlitch(time);
 
-    for (const mini of app.minis) renderMini(mini, time);
+    const frameSeed = glitch.active ? glitch.seed + Math.floor(time / 16.6667) : 0;
+    for (const mini of app.minis) renderMini(mini, time, frameSeed);
+    ctx.save();
     for (const mini of app.minis) drawCubeLabel(mini);
+    ctx.restore();
 
     updateHover();
   }
@@ -1840,8 +1958,8 @@
   }
 
   function unlockAllAudio() {
-    unlockStaticGlitchAudio();
-    unlockKeypadAudio();
+    if (!staticGlitchAudio.unlocked) unlockStaticGlitchAudio();
+    if (!keypadAudio.context || keypadAudio.context.state !== 'running') unlockKeypadAudio();
   }
 
   window.addEventListener('pointerdown', unlockAllAudio, { capture: true });
@@ -1849,11 +1967,13 @@
   window.addEventListener('keydown', unlockAllAudio, { capture: true });
 
   canvas.addEventListener('pointermove', (event) => {
+    app.pointerActive = true;
     app.pointer = pointerPosition(event);
     updateHover();
   });
 
   canvas.addEventListener('pointerleave', () => {
+    app.pointerActive = false;
     app.pointer = { x: -9999, y: -9999 };
     app.hoveredIndex = -1;
     app.wallHoveredIndex = -1;
@@ -1865,7 +1985,7 @@
   });
 
   canvas.addEventListener('pointerdown', (event) => {
-    unlockAllAudio();
+    app.pointerActive = true;
     app.pointer = pointerPosition(event);
     const wallHit = hitTestWall(app.pointer);
     if (wallHit >= 0) {
@@ -1873,14 +1993,13 @@
       return;
     }
     const hit = hitTestCube(app.pointer);
-    if (typeof hit === 'number') {
+    if (hit >= 0) {
       const destination = app.minis[hit].href;
       window.location.assign(destination);
     }
   });
 
   canvas.addEventListener('keydown', (event) => {
-    unlockAllAudio();
     if (event.key === 'Escape') canvas.blur();
   });
 
@@ -1889,6 +2008,5 @@
   preloadStaticGlitchAudio();
   buildMinis();
   resizeCanvas();
-  updateGridTargets();
   requestAnimationFrame(frame);
 })();
