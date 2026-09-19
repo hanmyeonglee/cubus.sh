@@ -30,16 +30,13 @@
   const CAMERA_Z = 7.8;
   const CAMERA_FOCAL = 6.7;
   const MINI_GRID_HALF = .34 * .85;
-  const RETICLE_SIZE = 96;
   const FACE_ARROW_GAP = .26;
   const FACE_ARROW_REACH = .70;
   const EDGE_COLOR = '#f4ffff';
   const VECTOR_COLOR = '#51f7d1';
-  const SIGNAL_COLOR = '#00ff66';
   const FACE_COLOR = '#07121a';
   const GLITCH_CYAN = '#00f0ff';
   const GLITCH_MAGENTA = '#ff2bb5';
-  const RETICLE_COLOR = '#00f0ff';
   const FONT_STACK = '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace';
 
   const navItems = [
@@ -77,6 +74,10 @@
     cacheWidth: 0,
     cacheHeight: 0,
     cacheDpr: 0
+  };
+
+  const bulkheadState = {
+    isOpened: false
   };
 
   function createRotationCache(rotation) {
@@ -583,9 +584,10 @@
     target.globalCompositeOperation = 'source-over';
     target.drawImage(bunkerWallCacheCanvas, 0, 0, width, height);
 
+    const activeIndex = bulkheadState.isOpened ? app.hoveredIndex : app.wallHoveredIndex;
     for (const mini of app.minis) {
       const aperture = getBunkerAperture(mini);
-      const active = app.hoveredIndex === mini.index;
+      const active = activeIndex === mini.index;
       target.save();
       drawBunkerAperturePath(target, aperture, 18);
       target.fillStyle = active ? 'rgba(9, 24, 28, .98)' : 'rgba(13, 18, 22, .98)';
@@ -603,7 +605,7 @@
       target.fill();
       target.restore();
 
-      drawApertureShutters(target, aperture, mini.index);
+      if (!bulkheadState.isOpened) drawApertureShutters(target, aperture, mini.index);
 
       target.save();
       drawBunkerAperturePath(target, aperture);
@@ -1162,10 +1164,27 @@
     state: 'grid',
     interactionEnabled: true,
     hoveredIndex: -1,
+    wallHoveredIndex: -1,
     pointer: { x: -9999, y: -9999 },
     minis: [],
     lastTime: performance.now(),
   };
+
+  function setBulkheadOpened(isOpened) {
+    const nextState = Boolean(isOpened);
+    if (bulkheadState.isOpened === nextState) return;
+    bulkheadState.isOpened = nextState;
+    app.hoveredIndex = -1;
+    app.wallHoveredIndex = -1;
+    for (const mini of app.minis) mini.hovered = false;
+    canvas.classList.remove('is-wall-hovered', 'is-cube-hovered');
+    drawBunkerWall();
+  }
+
+  window.cubusBulkhead = Object.freeze({
+    get isOpened() { return bulkheadState.isOpened; },
+    setOpened: setBulkheadOpened
+  });
 
   function makeMiniCube(index, column, row, depth) {
     const velocityTarget = {
@@ -1241,7 +1260,6 @@
 
   function updateMinis(dt, time) {
     for (const mini of app.minis) {
-      const speed = app.hoveredIndex === mini.index ? 1.12 : 1;
       let targetVelocity = mini.velocityTarget;
       if (mini.rotationBoost) {
         const progress = clamp((time - mini.rotationBoost.startedAt) / mini.rotationBoost.duration, 0, 1);
@@ -1257,9 +1275,9 @@
       mini.velocity.x = lerp(mini.velocity.x, targetVelocity.x, smoothing);
       mini.velocity.y = lerp(mini.velocity.y, targetVelocity.y, smoothing);
       mini.velocity.z = lerp(mini.velocity.z, targetVelocity.z, smoothing);
-      mini.rotation.x += mini.velocity.x * dt * speed;
-      mini.rotation.y += mini.velocity.y * dt * speed;
-      mini.rotation.z += mini.velocity.z * dt * speed;
+      mini.rotation.x += mini.velocity.x * dt;
+      mini.rotation.y += mini.velocity.y * dt;
+      mini.rotation.z += mini.velocity.z * dt;
     }
   }
 
@@ -1287,25 +1305,35 @@
     return hit.faces.some((face) => pointInPolygon(point, face.points));
   }
 
-  function hitTest(point) {
-    if (!app.interactionEnabled) return -1;
+  function hitTestCube(point) {
+    // The transparent slit is visually open but remains physically occluded while closed.
+    if (!bulkheadState.isOpened || !app.interactionEnabled) return -1;
     for (let i = app.minis.length - 1; i >= 0; i -= 1) {
       if (cubeIsHit(point, app.minis[i].hit, 6)) return i;
-    }
-    for (let i = app.minis.length - 1; i >= 0; i -= 1) {
-      const aperture = getBunkerAperture(app.minis[i]);
-      if (pointInPolygon(point, getBunkerAperturePoints(aperture))) return i;
     }
     return -1;
   }
 
+  function hitTestWall(point) {
+    if (bulkheadState.isOpened || !app.interactionEnabled) return -1;
+    if (point.x < 0 || point.x > viewport.width || point.y < 0 || point.y > viewport.height) return -1;
+
+    const column = clamp(Math.floor(point.x / (viewport.width / 4)), 0, 3);
+    const topAnchor = gridScreenAnchor(column, 0).y;
+    const bottomAnchor = gridScreenAnchor(column, 1).y;
+    const row = Math.abs(point.y - topAnchor) <= Math.abs(point.y - bottomAnchor) ? 0 : 1;
+    return row * 4 + column;
+  }
+
   function updateHover() {
-    const hit = hitTest(app.pointer);
-    const next = typeof hit === 'number' ? hit : -1;
-    const changed = next !== app.hoveredIndex;
-    app.hoveredIndex = next;
-    for (const mini of app.minis) mini.hovered = mini.index === next;
-    canvas.style.cursor = next >= 0 ? 'pointer' : 'default';
+    const nextCube = hitTestCube(app.pointer);
+    const nextWall = hitTestWall(app.pointer);
+    const changed = nextCube !== app.hoveredIndex || nextWall !== app.wallHoveredIndex;
+    app.hoveredIndex = nextCube;
+    app.wallHoveredIndex = nextWall;
+    for (const mini of app.minis) mini.hovered = bulkheadState.isOpened && mini.index === nextCube;
+    canvas.classList.toggle('is-wall-hovered', !bulkheadState.isOpened && nextWall >= 0);
+    canvas.classList.toggle('is-cube-hovered', bulkheadState.isOpened && nextCube >= 0);
     if (changed) drawBunkerWall();
   }
 
@@ -1313,7 +1341,6 @@
     if (!mini.hit) return;
     const centerX = (mini.hit.bounds.left + mini.hit.bounds.right) / 2;
     const bottom = mini.hit.bounds.bottom;
-    const hover = mini.hovered;
     const unit = clamp(Math.min(viewport.width, viewport.height) / 600, .62, 1.18);
     const labelSize = clamp(11 * unit, 8, 13);
     const urlSize = clamp(8 * unit, 7, 10);
@@ -1324,91 +1351,23 @@
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = `600 ${labelSize}px ${FONT_STACK}`;
-    ctx.fillStyle = hover ? '#ffffff' : 'rgba(227, 255, 246, .78)';
-    ctx.shadowColor = hover ? SIGNAL_COLOR : 'rgba(0, 255, 102, .28)';
-    ctx.shadowBlur = hover ? 12 : 5;
+    ctx.fillStyle = 'rgba(227, 255, 246, .78)';
+    ctx.shadowColor = 'rgba(0, 255, 102, .28)';
+    ctx.shadowBlur = 5;
     ctx.fillText(mini.label, centerX, labelY);
     ctx.shadowBlur = 0;
     ctx.font = `${urlSize}px ${FONT_STACK}`;
-    ctx.fillStyle = hover ? 'rgba(0, 255, 102, .95)' : 'rgba(0, 255, 102, .53)';
+    ctx.fillStyle = 'rgba(0, 255, 102, .53)';
     ctx.fillText(mini.href, centerX, urlY);
-
-    if (hover) {
-      ctx.strokeStyle = 'rgba(0, 255, 102, .48)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(centerX - Math.min(33, viewport.width * .06), urlY + 9);
-      ctx.lineTo(centerX + Math.min(33, viewport.width * .06), urlY + 9);
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  function drawTargetingBrackets(mini) {
-    if (!mini.hit) return;
-    const center = worldToScreen(mini.position);
-    const aperture = getBunkerAperture(mini);
-    const half = Math.min(RETICLE_SIZE / 2, aperture.width * .42, aperture.height * .42);
-    const left = center.x - half;
-    const right = center.x + half;
-    const top = center.y - half;
-    const bottom = center.y + half;
-    const arm = 15;
-    const centerX = center.x;
-    const centerY = center.y;
-
-    ctx.save();
-    ctx.strokeStyle = RETICLE_COLOR;
-    ctx.shadowColor = RETICLE_COLOR;
-    ctx.shadowBlur = 12;
-    ctx.lineWidth = 1.25;
-    ctx.lineJoin = 'miter';
-    ctx.lineCap = 'square';
-
-    const bracket = (x, y, horizontal, vertical) => {
-      ctx.beginPath();
-      ctx.moveTo(x, y + vertical * arm);
-      ctx.lineTo(x, y);
-      ctx.lineTo(x + horizontal * arm, y);
-      ctx.stroke();
-    };
-
-    bracket(left, top, 1, 1);
-    bracket(right, top, -1, 1);
-    bracket(left, bottom, 1, -1);
-    bracket(right, bottom, -1, -1);
-
-    ctx.globalAlpha = .58;
-    ctx.lineWidth = .8;
-    ctx.beginPath();
-    ctx.moveTo(centerX - 3, top - 4);
-    ctx.lineTo(centerX + 3, top - 4);
-    ctx.moveTo(centerX - 3, bottom + 4);
-    ctx.lineTo(centerX + 3, bottom + 4);
-    ctx.moveTo(left - 4, centerY - 3);
-    ctx.lineTo(left - 4, centerY + 3);
-    ctx.moveTo(right + 4, centerY - 3);
-    ctx.lineTo(right + 4, centerY + 3);
-    ctx.moveTo(centerX - 4, centerY);
-    ctx.lineTo(centerX + 4, centerY);
-    ctx.moveTo(centerX, centerY - 4);
-    ctx.lineTo(centerX, centerY + 4);
-    ctx.stroke();
-    ctx.globalAlpha = .9;
-    ctx.fillStyle = RETICLE_COLOR;
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, 1.45, 0, TAU);
-    ctx.fill();
     ctx.restore();
   }
 
   function renderMini(mini, time) {
-    const hovered = mini.hovered;
+    const hovered = bulkheadState.isOpened && mini.hovered;
     const glitchActive = glitch.active;
     const frameSeed = glitch.seed + Math.floor(time / 16.6667);
-    const renderTarget = hovered ? { ...mini, half: mini.half * 1.09 } : mini;
     if (glitchActive) {
-      renderCube(renderTarget, {
+      renderCube(mini, {
         wireOnly: true,
         edgeColor: GLITCH_MAGENTA,
         edgeAlpha: .84 * glitch.intensity,
@@ -1417,7 +1376,7 @@
         vertexJitter: .075 * glitch.intensity,
         seed: frameSeed + mini.index * 9
       });
-      renderCube(renderTarget, {
+      renderCube(mini, {
         wireOnly: true,
         edgeColor: GLITCH_CYAN,
         edgeAlpha: .88 * glitch.intensity,
@@ -1427,7 +1386,7 @@
         seed: frameSeed + mini.index * 11 + 29
       });
     }
-    mini.hit = renderCube(renderTarget, {
+    mini.hit = renderCube(mini, {
       vertexJitter: glitchActive ? .06 * glitch.intensity : 0,
       seed: frameSeed + mini.index,
       edgeAlpha: hovered ? 1.35 : .92,
@@ -1435,9 +1394,6 @@
       fillAlpha: hovered ? 1.16 : .88,
       textureAlpha: hovered ? 1.18 : .82
     });
-    if (hovered) {
-      drawTargetingBrackets(mini);
-    }
   }
 
   function render(time) {
@@ -1484,15 +1440,17 @@
   canvas.addEventListener('pointerleave', () => {
     app.pointer = { x: -9999, y: -9999 };
     app.hoveredIndex = -1;
+    app.wallHoveredIndex = -1;
     for (const mini of app.minis) mini.hovered = false;
-    canvas.style.cursor = 'default';
+    canvas.classList.remove('is-wall-hovered', 'is-cube-hovered');
     drawBunkerWall();
   });
 
   canvas.addEventListener('pointerdown', (event) => {
     unlockAllAudio();
+    if (!bulkheadState.isOpened) return;
     app.pointer = pointerPosition(event);
-    const hit = hitTest(app.pointer);
+    const hit = hitTestCube(app.pointer);
     if (typeof hit === 'number') {
       const destination = app.minis[hit].href;
       window.location.assign(destination);

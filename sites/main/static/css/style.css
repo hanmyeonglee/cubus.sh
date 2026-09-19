@@ -37,6 +37,9 @@ body {
   pointer-events: auto;
 }
 
+#scene.is-wall-hovered { cursor: pointer; }
+#scene.is-cube-hovered { cursor: pointer; }
+
 #bunker-wall {
   position: fixed;
   z-index: 2;
