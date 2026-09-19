@@ -3,10 +3,28 @@
 
   const canvas = document.getElementById('scene');
   const ctx = canvas.getContext('2d', { alpha: false });
-  const terminalLaunch = document.getElementById('terminal-launch');
-  const bulkhead = document.getElementById('bulkhead');
-  const modeReadout = document.getElementById('mode');
-  const hintReadout = document.getElementById('hint');
+  const bunkerWallCanvas = document.getElementById('bunker-wall');
+  const bunkerWallCtx = bunkerWallCanvas.getContext('2d');
+  const bunkerWallCacheCanvas = document.createElement('canvas');
+  const bunkerWallCacheCtx = bunkerWallCacheCanvas.getContext('2d');
+  const bunkerHazardCanvas = document.createElement('canvas');
+  const bunkerHazardCtx = bunkerHazardCanvas.getContext('2d');
+  let bunkerHazardPattern = null;
+
+  bunkerHazardCanvas.width = 36;
+  bunkerHazardCanvas.height = 36;
+  bunkerHazardCtx.fillStyle = '#101417';
+  bunkerHazardCtx.fillRect(0, 0, 36, 36);
+  bunkerHazardCtx.fillStyle = '#e0a328';
+  for (let stripeX = -36; stripeX < 72; stripeX += 18) {
+    bunkerHazardCtx.beginPath();
+    bunkerHazardCtx.moveTo(stripeX, 36);
+    bunkerHazardCtx.lineTo(stripeX + 10, 36);
+    bunkerHazardCtx.lineTo(stripeX + 46, 0);
+    bunkerHazardCtx.lineTo(stripeX + 36, 0);
+    bunkerHazardCtx.closePath();
+    bunkerHazardCtx.fill();
+  }
 
   const TAU = Math.PI * 2;
   const CAMERA_Z = 7.8;
@@ -54,6 +72,12 @@
     return scaleVec(a, 1 / len);
   };
   const cloneVec = (a) => vec(a.x, a.y, a.z);
+
+  const bunkerWall = {
+    cacheWidth: 0,
+    cacheHeight: 0,
+    cacheDpr: 0
+  };
 
   function createRotationCache(rotation) {
     return {
@@ -146,7 +170,10 @@
     backgroundCache.height = 0;
     backgroundCache.dpr = 0;
     rebuildBackgroundCache();
-    if (app.minis.length) updateGridTargets();
+    if (app.minis.length) {
+      updateGridTargets();
+      resizeBunkerWall();
+    }
   }
 
   function worldToScreen(point) {
@@ -164,6 +191,458 @@
     const perspective = CAMERA_FOCAL / depth;
     const unit = viewport.scale * perspective;
     return vec((x - viewport.centerX) / unit, -(y - viewport.centerY) / unit, z);
+  }
+
+  function getBunkerAperture(mini) {
+    const anchor = gridScreenAnchor(mini.column, mini.row);
+    const cellWidth = viewport.width / 4;
+    const rowGap = Math.abs(gridScreenAnchor(0, 1).y - gridScreenAnchor(0, 0).y);
+    const width = clamp(cellWidth * .72, 44, 220);
+    const height = clamp(Math.min(viewport.height * .30, rowGap * .78), 104, 250);
+    const cut = clamp(Math.min(width * .2, height * .2), 10, 34);
+    return { x: anchor.x, y: anchor.y, width, height, cut };
+  }
+
+  function getBunkerAperturePoints(aperture, padding = 0) {
+    const width = aperture.width + padding * 2;
+    const height = aperture.height + padding * 2;
+    const cut = clamp(aperture.cut + padding * .18, 8, Math.min(width, height) * .24);
+    const halfWidth = width / 2;
+    const halfHeight = height / 2;
+    const left = aperture.x - halfWidth;
+    const right = aperture.x + halfWidth;
+    const top = aperture.y - halfHeight;
+    const bottom = aperture.y + halfHeight;
+    return [
+      { x: left + cut, y: top },
+      { x: right - cut, y: top },
+      { x: right, y: top + cut },
+      { x: right, y: bottom - cut },
+      { x: right - cut, y: bottom },
+      { x: left + cut, y: bottom },
+      { x: left, y: bottom - cut },
+      { x: left, y: top + cut }
+    ];
+  }
+
+  function drawBunkerAperturePath(target, aperture, padding = 0) {
+    const points = getBunkerAperturePoints(aperture, padding);
+    target.beginPath();
+    target.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i += 1) target.lineTo(points[i].x, points[i].y);
+    target.closePath();
+  }
+
+  function drawHexBolt(target, x, y, radius, alpha = .48) {
+    target.save();
+    target.globalAlpha = alpha;
+    target.fillStyle = '#11161a';
+    target.strokeStyle = 'rgba(179, 191, 191, .48)';
+    target.lineWidth = 1;
+    target.beginPath();
+    for (let i = 0; i < 6; i += 1) {
+      const angle = -Math.PI / 6 + i * Math.PI / 3;
+      const pointX = x + Math.cos(angle) * radius;
+      const pointY = y + Math.sin(angle) * radius;
+      if (i === 0) target.moveTo(pointX, pointY);
+      else target.lineTo(pointX, pointY);
+    }
+    target.closePath();
+    target.fill();
+    target.stroke();
+    target.restore();
+  }
+
+  function drawBunkerBarcode(target, x, y, width, height, seed) {
+    target.save();
+    target.fillStyle = 'rgba(6, 11, 14, .74)';
+    target.strokeStyle = 'rgba(104, 179, 186, .42)';
+    target.lineWidth = 1;
+    target.fillRect(x, y, width, height);
+    target.strokeRect(x, y, width, height);
+    let cursor = x + 4;
+    let index = 0;
+    while (cursor < x + width - 4) {
+      const bar = 1 + Math.round(((hashNoise(seed + index * 3.17) + 1) / 2) * 3);
+      target.fillStyle = index % 3 === 0 ? 'rgba(0, 240, 255, .72)' : 'rgba(198, 44, 255, .48)';
+      target.fillRect(cursor, y + 3, bar, height - 6);
+      cursor += bar + 2 + Math.round(((hashNoise(seed + index * 7.11) + 1) / 2) * 2);
+      index += 1;
+    }
+    target.restore();
+  }
+
+  function drawBunkerWallText(target, text, x, y, align = 'left', alpha = .46) {
+    const size = clamp(Math.min(viewport.width, viewport.height) * .012, 7, 11);
+    target.save();
+    target.font = `${size}px ${FONT_STACK}`;
+    target.letterSpacing = '0.12em';
+    target.textAlign = align;
+    target.textBaseline = 'middle';
+    target.fillStyle = `rgba(210, 221, 215, ${alpha})`;
+    target.shadowColor = 'rgba(0, 240, 255, .16)';
+    target.shadowBlur = 4;
+    target.fillText(text, x, y);
+    target.restore();
+  }
+
+  function drawBunkerWallSurface(target) {
+    const width = viewport.width;
+    const height = viewport.height;
+    const base = target.createLinearGradient(0, 0, width, height);
+    base.addColorStop(0, '#3a3d3e');
+    base.addColorStop(.42, '#252a2d');
+    base.addColorStop(1, '#171d21');
+    target.fillStyle = base;
+    target.fillRect(0, 0, width, height);
+
+    const steelTop = target.createLinearGradient(0, 0, 0, height * .11);
+    steelTop.addColorStop(0, 'rgba(157, 165, 161, .22)');
+    steelTop.addColorStop(1, 'rgba(13, 18, 22, .06)');
+    target.fillStyle = steelTop;
+    target.fillRect(0, 0, width, height * .11);
+    target.fillStyle = 'rgba(6, 10, 13, .28)';
+    target.fillRect(0, height * .89, width, height * .11);
+
+    const speckCount = Math.round(clamp(width * height / 14000, 80, 420));
+    for (let i = 0; i < speckCount; i += 1) {
+      const normalizedX = (hashNoise(i * 2.71 + 4) + 1) / 2;
+      const normalizedY = (hashNoise(i * 4.83 + 19) + 1) / 2;
+      const tone = (hashNoise(i * 8.19 + 33) + 1) / 2;
+      target.fillStyle = tone > .55 ? 'rgba(215, 217, 204, .055)' : 'rgba(0, 0, 0, .09)';
+      target.fillRect(normalizedX * width, normalizedY * height, tone > .7 ? 2 : 1, tone > .7 ? 2 : 1);
+    }
+
+    target.save();
+    target.lineWidth = 1;
+    target.strokeStyle = 'rgba(4, 8, 11, .48)';
+    for (let column = 1; column < 8; column += 1) {
+      const x = width * column / 8;
+      target.beginPath();
+      target.moveTo(x, 0);
+      target.lineTo(x, height);
+      target.stroke();
+    }
+    for (let row = 1; row < 8; row += 1) {
+      const y = height * row / 8;
+      target.beginPath();
+      target.moveTo(0, y);
+      target.lineTo(width, y);
+      target.stroke();
+    }
+    target.strokeStyle = 'rgba(193, 204, 198, .11)';
+    target.beginPath();
+    target.moveTo(width * .035, height * .075);
+    target.lineTo(width * .965, height * .075);
+    target.moveTo(width * .035, height * .925);
+    target.lineTo(width * .965, height * .925);
+    target.stroke();
+    target.restore();
+
+    const edgeGradient = target.createLinearGradient(0, 0, width, 0);
+    edgeGradient.addColorStop(0, 'rgba(5, 9, 12, .65)');
+    edgeGradient.addColorStop(.06, 'rgba(137, 150, 148, .16)');
+    edgeGradient.addColorStop(.94, 'rgba(137, 150, 148, .16)');
+    edgeGradient.addColorStop(1, 'rgba(5, 9, 12, .65)');
+    target.fillStyle = edgeGradient;
+    target.fillRect(0, height * .03, width, height * .035);
+    target.fillRect(0, height * .935, width, height * .035);
+
+    for (const mini of app.minis) {
+      const aperture = getBunkerAperture(mini);
+      const platePaddingX = Math.min(34, width * .035);
+      const platePaddingY = Math.min(30, height * .035);
+      const plateLeft = aperture.x - aperture.width / 2 - platePaddingX;
+      const plateTop = aperture.y - aperture.height / 2 - platePaddingY;
+      const plateWidth = aperture.width + platePaddingX * 2;
+      const plateHeight = aperture.height + platePaddingY * 2;
+      target.strokeStyle = 'rgba(206, 214, 207, .13)';
+      target.lineWidth = 1;
+      target.strokeRect(plateLeft, plateTop, plateWidth, plateHeight);
+      target.strokeStyle = 'rgba(3, 8, 11, .52)';
+      target.strokeRect(plateLeft + 4, plateTop + 4, plateWidth - 8, plateHeight - 8);
+      drawHexBolt(target, plateLeft + 8, plateTop + 8, 3.5, .54);
+      drawHexBolt(target, plateLeft + plateWidth - 8, plateTop + 8, 3.5, .54);
+      drawHexBolt(target, plateLeft + 8, plateTop + plateHeight - 8, 3.5, .54);
+      drawHexBolt(target, plateLeft + plateWidth - 8, plateTop + plateHeight - 8, 3.5, .54);
+    }
+
+    target.save();
+    target.lineCap = 'round';
+    target.strokeStyle = 'rgba(0, 0, 0, .58)';
+    target.lineWidth = 7;
+    target.beginPath();
+    target.moveTo(width * .025, height * .18);
+    target.lineTo(width * .025, height * .82);
+    target.lineTo(width * .08, height * .86);
+    target.moveTo(width * .975, height * .18);
+    target.lineTo(width * .975, height * .82);
+    target.lineTo(width * .92, height * .86);
+    target.stroke();
+    target.strokeStyle = 'rgba(102, 145, 148, .38)';
+    target.lineWidth = 2;
+    target.stroke();
+    target.strokeStyle = 'rgba(0, 240, 255, .22)';
+    target.lineWidth = 1;
+    target.stroke();
+    target.restore();
+
+    const boltRadius = clamp(Math.min(width, height) * .006, 3, 5);
+    const edgeInset = clamp(Math.min(width, height) * .026, 16, 30);
+    for (let i = 0; i < 7; i += 1) {
+      const x = edgeInset + (width - edgeInset * 2) * i / 6;
+      drawHexBolt(target, x, edgeInset, boltRadius, .56);
+      drawHexBolt(target, x, height - edgeInset, boltRadius, .56);
+    }
+
+    drawBunkerWallText(target, 'SECTOR 04-B', width * .045, height * .055);
+    drawBunkerWallText(target, 'ARMOR PLATE // T-09', width * .955, height * .055, 'right', .36);
+    drawBunkerWallText(target, 'CAUTION: HIGH VOLTAGE', width * .045, height * .955, 'left', .4);
+    drawBunkerWallText(target, 'REINFORCED CONCRETE // 4200 PSI', width * .955, height * .955, 'right', .34);
+    drawBunkerBarcode(target, width * .045, height * .12, clamp(width * .085, 54, 105), 24, 17);
+    drawBunkerBarcode(target, width * .955 - clamp(width * .085, 54, 105), height * .84, clamp(width * .085, 54, 105), 24, 47);
+
+    target.save();
+    target.fillStyle = 'rgba(0, 240, 255, .56)';
+    target.shadowColor = 'rgba(0, 240, 255, .55)';
+    target.shadowBlur = 6;
+    for (let i = 0; i < 12; i += 1) {
+      const y = height * (.17 + i * .056);
+      target.fillRect(width * .035, y, 5 + (i % 3) * 3, 2);
+      target.fillRect(width * .965 - 8 - (i % 3) * 3, y, 5 + (i % 3) * 3, 2);
+    }
+    target.restore();
+  }
+
+  function getShutterSeamPoints(aperture) {
+    const left = aperture.x - aperture.width / 2;
+    const top = aperture.y - aperture.height / 2;
+    const stepX = aperture.width / 10;
+    // Screen-space profile: the center flat is lower than both outer flats.
+    return [
+      { x: left, y: top + aperture.height * .5 },
+      { x: left + stepX * 2, y: top + aperture.height * .5 },
+      { x: left + stepX * 4, y: top + aperture.height * .6 },
+      { x: left + stepX * 6, y: top + aperture.height * .6 },
+      { x: left + stepX * 8, y: top + aperture.height * .5 },
+      { x: left + aperture.width, y: top + aperture.height * .5 }
+    ];
+  }
+
+  function drawShutterPolygon(target, aperture, seam, topPanel) {
+    const left = aperture.x - aperture.width / 2;
+    const right = aperture.x + aperture.width / 2;
+    const top = aperture.y - aperture.height / 2;
+    const bottom = aperture.y + aperture.height / 2;
+    target.beginPath();
+    if (topPanel) {
+      target.moveTo(left, top);
+      target.lineTo(right, top);
+      for (let i = seam.length - 1; i >= 0; i -= 1) target.lineTo(seam[i].x, seam[i].y);
+    } else {
+      target.moveTo(seam[0].x, seam[0].y);
+      for (let i = 1; i < seam.length; i += 1) target.lineTo(seam[i].x, seam[i].y);
+      target.lineTo(right, bottom);
+      target.lineTo(left, bottom);
+    }
+    target.closePath();
+  }
+
+  function drawShutterSlitPath(target, aperture) {
+    const width = aperture.width * .67;
+    const height = clamp(aperture.height * .10, 7, 16);
+    const centerY = aperture.y - aperture.height * .15;
+    const left = aperture.x - width / 2;
+    const right = aperture.x + width / 2;
+    const top = centerY - height / 2;
+    const bottom = centerY + height / 2;
+    const cut = Math.min(height * .38, width * .08);
+    target.beginPath();
+    target.moveTo(left + cut, top);
+    target.lineTo(right - cut, top);
+    target.lineTo(right, centerY);
+    target.lineTo(right - cut, bottom);
+    target.lineTo(left + cut, bottom);
+    target.lineTo(left, centerY);
+    target.closePath();
+  }
+
+  function getBunkerHazardPattern(target) {
+    if (!bunkerHazardPattern) bunkerHazardPattern = target.createPattern(bunkerHazardCanvas, 'repeat');
+    return bunkerHazardPattern;
+  }
+
+  function drawApertureShutters(target, aperture, bayIndex) {
+    const seam = getShutterSeamPoints(aperture);
+    const left = aperture.x - aperture.width / 2;
+    const right = aperture.x + aperture.width / 2;
+    const top = aperture.y - aperture.height / 2;
+    const bottom = aperture.y + aperture.height / 2;
+    const radius = clamp(aperture.width * .035, 1.8, 3.5);
+
+    target.save();
+    drawBunkerAperturePath(target, aperture);
+    target.clip();
+
+    const topMetal = target.createLinearGradient(0, top, 0, aperture.y);
+    topMetal.addColorStop(0, '#4b5050');
+    topMetal.addColorStop(.54, '#2d3538');
+    topMetal.addColorStop(1, '#171e22');
+    target.fillStyle = topMetal;
+    drawShutterPolygon(target, aperture, seam, true);
+    target.fill();
+
+    const bottomMetal = target.createLinearGradient(0, aperture.y, 0, bottom);
+    bottomMetal.addColorStop(0, '#20282c');
+    bottomMetal.addColorStop(.48, '#30383a');
+    bottomMetal.addColorStop(1, '#151b1f');
+    target.fillStyle = bottomMetal;
+    drawShutterPolygon(target, aperture, seam, false);
+    target.fill();
+
+    target.strokeStyle = 'rgba(211, 220, 213, .17)';
+    target.lineWidth = 1;
+    for (let i = 1; i < 4; i += 1) {
+      const y = top + aperture.height * i * .12;
+      target.beginPath();
+      target.moveTo(left + aperture.width * .12, y);
+      target.lineTo(right - aperture.width * .12, y);
+      target.stroke();
+    }
+    for (let i = 1; i < 4; i += 1) {
+      const y = bottom - aperture.height * i * .12;
+      target.beginPath();
+      target.moveTo(left + aperture.width * .12, y);
+      target.lineTo(right - aperture.width * .12, y);
+      target.stroke();
+    }
+
+    target.strokeStyle = 'rgba(5, 9, 11, .66)';
+    target.lineWidth = 2;
+    target.beginPath();
+    target.moveTo(left + aperture.width * .16, top + 4);
+    target.lineTo(left + aperture.width * .16, seam[1].y - 6);
+    target.moveTo(right - aperture.width * .16, top + 4);
+    target.lineTo(right - aperture.width * .16, seam[4].y - 6);
+    target.moveTo(left + aperture.width * .16, seam[1].y + 6);
+    target.lineTo(left + aperture.width * .16, bottom - 4);
+    target.moveTo(right - aperture.width * .16, seam[4].y + 6);
+    target.lineTo(right - aperture.width * .16, bottom - 4);
+    target.stroke();
+
+    drawHexBolt(target, left + aperture.width * .18, top + aperture.height * .13, radius, .75);
+    drawHexBolt(target, right - aperture.width * .18, top + aperture.height * .13, radius, .75);
+    drawHexBolt(target, left + aperture.width * .18, bottom - aperture.height * .13, radius, .75);
+    drawHexBolt(target, right - aperture.width * .18, bottom - aperture.height * .13, radius, .75);
+    drawBunkerWallText(target, `BAY-${String(bayIndex + 1).padStart(2, '0')}`, aperture.x, top + aperture.height * .13, 'center', .58);
+    target.restore();
+
+    target.save();
+    target.globalCompositeOperation = 'destination-out';
+    drawShutterSlitPath(target, aperture);
+    target.fill();
+    target.restore();
+
+    target.save();
+    drawShutterSlitPath(target, aperture);
+    target.strokeStyle = 'rgba(4, 9, 12, .96)';
+    target.lineWidth = 4;
+    target.stroke();
+    target.strokeStyle = 'rgba(0, 240, 255, .42)';
+    target.lineWidth = 1;
+    target.shadowColor = 'rgba(0, 240, 255, .42)';
+    target.shadowBlur = 6;
+    target.stroke();
+    target.restore();
+
+    target.save();
+    target.lineCap = 'butt';
+    target.lineJoin = 'bevel';
+    target.beginPath();
+    target.moveTo(seam[0].x, seam[0].y);
+    for (let i = 1; i < seam.length; i += 1) target.lineTo(seam[i].x, seam[i].y);
+    target.strokeStyle = 'rgba(4, 7, 9, .96)';
+    target.lineWidth = clamp(aperture.width * .085, 7, 13);
+    target.stroke();
+    target.strokeStyle = getBunkerHazardPattern(target) || '#e0a328';
+    target.lineWidth = clamp(aperture.width * .064, 5, 10);
+    target.stroke();
+    target.strokeStyle = 'rgba(238, 245, 224, .44)';
+    target.lineWidth = 1;
+    target.stroke();
+    target.restore();
+  }
+
+  function drawBunkerWall() {
+    if (!bunkerWallCanvas || !bunkerWallCtx || !bunkerWall.cacheWidth) return;
+    const width = viewport.width;
+    const height = viewport.height;
+    const target = bunkerWallCtx;
+    target.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
+    target.clearRect(0, 0, width, height);
+    target.globalCompositeOperation = 'source-over';
+    target.drawImage(bunkerWallCacheCanvas, 0, 0, width, height);
+
+    for (const mini of app.minis) {
+      const aperture = getBunkerAperture(mini);
+      const active = app.hoveredIndex === mini.index;
+      target.save();
+      drawBunkerAperturePath(target, aperture, 18);
+      target.fillStyle = active ? 'rgba(9, 24, 28, .98)' : 'rgba(13, 18, 22, .98)';
+      target.strokeStyle = active ? 'rgba(167, 224, 218, .92)' : 'rgba(131, 143, 142, .7)';
+      target.lineWidth = active ? 2.4 : 1.5;
+      target.shadowColor = active ? 'rgba(0, 240, 255, .78)' : 'rgba(0, 0, 0, .22)';
+      target.shadowBlur = active ? 16 : 3;
+      target.fill();
+      target.stroke();
+      target.restore();
+
+      target.save();
+      target.globalCompositeOperation = 'destination-out';
+      drawBunkerAperturePath(target, aperture);
+      target.fill();
+      target.restore();
+
+      drawApertureShutters(target, aperture, mini.index);
+
+      target.save();
+      drawBunkerAperturePath(target, aperture);
+      target.strokeStyle = 'rgba(2, 7, 10, .92)';
+      target.lineWidth = 5;
+      target.stroke();
+      drawBunkerAperturePath(target, aperture, -4);
+      target.strokeStyle = active ? 'rgba(0, 240, 255, .98)' : 'rgba(0, 240, 255, .46)';
+      target.lineWidth = active ? 2.2 : 1;
+      target.shadowColor = active ? 'rgba(0, 240, 255, .9)' : 'rgba(0, 240, 255, .28)';
+      target.shadowBlur = active ? 14 : 4;
+      target.stroke();
+      target.strokeStyle = active ? 'rgba(198, 44, 255, .8)' : 'rgba(198, 44, 255, .28)';
+      target.lineWidth = active ? 1.2 : .7;
+      drawBunkerAperturePath(target, aperture, 7);
+      target.stroke();
+      target.restore();
+    }
+  }
+
+  function resizeBunkerWall() {
+    const width = viewport.width;
+    const height = viewport.height;
+    const dpr = viewport.dpr;
+    bunkerWallCanvas.width = Math.round(width * dpr);
+    bunkerWallCanvas.height = Math.round(height * dpr);
+    bunkerHazardPattern = null;
+    bunkerWallCanvas.style.width = `${width}px`;
+    bunkerWallCanvas.style.height = `${height}px`;
+    bunkerWallCacheCanvas.width = Math.round(width * dpr);
+    bunkerWallCacheCanvas.height = Math.round(height * dpr);
+    bunkerWallCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    bunkerWallCacheCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    bunkerWall.cacheWidth = width;
+    bunkerWall.cacheHeight = height;
+    bunkerWall.cacheDpr = dpr;
+    bunkerWallCacheCtx.clearRect(0, 0, width, height);
+    drawBunkerWallSurface(bunkerWallCacheCtx);
+    drawBunkerWall();
   }
 
   function drawStaticBackground(target) {
@@ -566,83 +1045,6 @@
     warnedAboutAutoplay: false
   };
 
-  // Asset paths are intentionally empty until the final sound design is supplied.
-  // They can be populated without changing the sequence through window.cubusIntroAudio.configure().
-  const INTRO_AUDIO_CUES = {
-    lockClick: { source: '', at: 0, volume: .82 },
-    neonFlare: { source: '', at: 120, volume: .58 },
-    hydraulicOpen: { source: '', at: 400, volume: .74 }
-  };
-  const introAudio = {
-    clips: new Map(),
-    unlocked: false,
-    warnedAboutAutoplay: false
-  };
-
-  function preloadIntroAudioCue(name) {
-    const cue = INTRO_AUDIO_CUES[name];
-    if (!cue || !cue.source || typeof window.Audio !== 'function') return null;
-    const existing = introAudio.clips.get(name);
-    if (existing && existing.src === new URL(cue.source, window.location.href).href) return existing;
-
-    const clip = new window.Audio();
-    clip.preload = 'auto';
-    clip.src = cue.source;
-    clip.volume = cue.volume;
-    clip.playsInline = true;
-    clip.load();
-    introAudio.clips.set(name, clip);
-    return clip;
-  }
-
-  function unlockIntroAudio() {
-    introAudio.unlocked = true;
-    for (const name of Object.keys(INTRO_AUDIO_CUES)) preloadIntroAudioCue(name);
-  }
-
-  function playIntroCue(name) {
-    const cue = INTRO_AUDIO_CUES[name];
-    const clip = preloadIntroAudioCue(name);
-    if (!cue || !clip) return false;
-    if (!introAudio.unlocked) {
-      if (!introAudio.warnedAboutAutoplay) {
-        console.warn('[CUBUS AUDIO] Intro cue playback is waiting for a user interaction.');
-        introAudio.warnedAboutAutoplay = true;
-      }
-      return false;
-    }
-
-    try {
-      clip.pause();
-      clip.currentTime = 0;
-      clip.volume = cue.volume;
-      const playback = clip.play();
-      if (playback && typeof playback.catch === 'function') {
-        playback.catch((error) => {
-          console.warn('[CUBUS AUDIO] Intro cue playback was rejected:', { name, source: cue.source, error });
-        });
-      }
-      return true;
-    } catch (error) {
-      console.warn('[CUBUS AUDIO] Intro cue playback failed:', { name, source: cue.source, error });
-      return false;
-    }
-  }
-
-  function configureIntroAudio(sources = {}) {
-    for (const [name, source] of Object.entries(sources)) {
-      if (!INTRO_AUDIO_CUES[name] || typeof source !== 'string') continue;
-      INTRO_AUDIO_CUES[name].source = source;
-      introAudio.clips.delete(name);
-      preloadIntroAudioCue(name);
-    }
-  }
-
-  window.cubusIntroAudio = Object.freeze({
-    configure: configureIntroAudio,
-    cues: INTRO_AUDIO_CUES
-  });
-
   function preloadStaticGlitchAudio() {
     if (staticGlitchAudio.preloaded) return staticGlitchAudio.clips;
     if (typeof window.Audio !== 'function') {
@@ -757,23 +1159,13 @@
   }
 
   const app = {
-    state: 'locked',
-    interactionEnabled: false,
+    state: 'grid',
+    interactionEnabled: true,
     hoveredIndex: -1,
     pointer: { x: -9999, y: -9999 },
     minis: [],
     lastTime: performance.now(),
   };
-
-  const introSequence = {
-    startedAt: 0,
-    authDuration: 300,
-    doorStartAt: 400,
-    doorDuration: 800,
-    completed: false,
-    cuesPlayed: new Set()
-  };
-  let isBooted = false;
 
   function makeMiniCube(index, column, row, depth) {
     const velocityTarget = {
@@ -847,57 +1239,6 @@
     }
   }
 
-  function fireIntroCue(name) {
-    if (introSequence.cuesPlayed.has(name)) return;
-    introSequence.cuesPlayed.add(name);
-    playIntroCue(name);
-  }
-
-  function updateIntroSequence(time) {
-    if (app.state !== 'unlocking' || introSequence.completed) return;
-    const elapsed = time - introSequence.startedAt;
-
-    if (elapsed >= INTRO_AUDIO_CUES.neonFlare.at) fireIntroCue('neonFlare');
-    if (elapsed >= introSequence.authDuration) {
-      terminalLaunch.classList.remove('is-authenticating');
-      terminalLaunch.classList.add('is-releasing');
-    }
-    if (elapsed >= introSequence.doorStartAt) {
-      bulkhead.classList.add('is-opening');
-      app.interactionEnabled = true;
-      canvas.classList.add('is-visible');
-      fireIntroCue('hydraulicOpen');
-    }
-    if (elapsed < introSequence.doorStartAt + introSequence.doorDuration + 40) return;
-
-    introSequence.completed = true;
-    isBooted = true;
-    app.state = 'grid';
-    glitch.nextAt = time + randomBetween(4000, 8000);
-    modeReadout.textContent = 'GRID ONLINE';
-    hintReadout.textContent = 'SELECT A DIMENSION';
-    document.body.classList.remove('booting');
-    bulkhead.setAttribute('aria-hidden', 'true');
-    bulkhead.hidden = true;
-  }
-
-  function beginBulkheadSequence(time) {
-    if (isBooted || app.state !== 'locked') return;
-    introSequence.startedAt = time;
-    introSequence.completed = false;
-    introSequence.cuesPlayed.clear();
-    app.state = 'unlocking';
-    terminalLaunch.classList.add('is-authenticating');
-    terminalLaunch.setAttribute('aria-disabled', 'true');
-    terminalLaunch.blur();
-    bulkhead.classList.add('is-authenticating');
-    bulkhead.setAttribute('aria-label', 'Security bulkhead unlocking');
-
-    unlockStaticGlitchAudio();
-    unlockIntroAudio();
-    fireIntroCue('lockClick');
-  }
-
   function updateMinis(dt, time) {
     for (const mini of app.minis) {
       const speed = app.hoveredIndex === mini.index ? 1.12 : 1;
@@ -951,15 +1292,21 @@
     for (let i = app.minis.length - 1; i >= 0; i -= 1) {
       if (cubeIsHit(point, app.minis[i].hit, 6)) return i;
     }
+    for (let i = app.minis.length - 1; i >= 0; i -= 1) {
+      const aperture = getBunkerAperture(app.minis[i]);
+      if (pointInPolygon(point, getBunkerAperturePoints(aperture))) return i;
+    }
     return -1;
   }
 
   function updateHover() {
     const hit = hitTest(app.pointer);
     const next = typeof hit === 'number' ? hit : -1;
+    const changed = next !== app.hoveredIndex;
     app.hoveredIndex = next;
     for (const mini of app.minis) mini.hovered = mini.index === next;
     canvas.style.cursor = next >= 0 ? 'pointer' : 'default';
+    if (changed) drawBunkerWall();
   }
 
   function drawCubeLabel(mini) {
@@ -1000,7 +1347,8 @@
   function drawTargetingBrackets(mini) {
     if (!mini.hit) return;
     const center = worldToScreen(mini.position);
-    const half = RETICLE_SIZE / 2;
+    const aperture = getBunkerAperture(mini);
+    const half = Math.min(RETICLE_SIZE / 2, aperture.width * .42, aperture.height * .42);
     const left = center.x - half;
     const right = center.x + half;
     const top = center.y - half;
@@ -1094,12 +1442,12 @@
 
   function render(time) {
     drawBackground(time);
-    if (app.state === 'grid') updateGlitch(time);
+    updateGlitch(time);
 
     for (const mini of app.minis) renderMini(mini, time);
     for (const mini of app.minis) drawCubeLabel(mini);
 
-    if (app.interactionEnabled) updateHover();
+    updateHover();
   }
 
   function frame(time) {
@@ -1107,7 +1455,6 @@
     const dt = elapsed / 1000;
     app.lastTime = time;
 
-    if (app.state === 'unlocking') updateIntroSequence(time);
     updateMinis(dt, time);
     render(time);
     requestAnimationFrame(frame);
@@ -1123,22 +1470,11 @@
 
   function unlockAllAudio() {
     unlockStaticGlitchAudio();
-    unlockIntroAudio();
   }
 
   window.addEventListener('pointerdown', unlockAllAudio, { capture: true });
   window.addEventListener('touchstart', unlockAllAudio, { capture: true, passive: true });
-  window.addEventListener('keydown', (event) => {
-    unlockAllAudio();
-    if (!isBooted && app.state === 'locked' && (event.key === 'Enter' || event.key === ' ')) {
-      event.preventDefault();
-      beginBulkheadSequence(performance.now());
-    }
-  }, { capture: true });
-
-  terminalLaunch.addEventListener('click', () => {
-    beginBulkheadSequence(performance.now());
-  });
+  window.addEventListener('keydown', unlockAllAudio, { capture: true });
 
   canvas.addEventListener('pointermove', (event) => {
     app.pointer = pointerPosition(event);
@@ -1150,6 +1486,7 @@
     app.hoveredIndex = -1;
     for (const mini of app.minis) mini.hovered = false;
     canvas.style.cursor = 'default';
+    drawBunkerWall();
   });
 
   canvas.addEventListener('pointerdown', (event) => {
@@ -1170,8 +1507,8 @@
   window.addEventListener('resize', resizeCanvas, { passive: true });
 
   preloadStaticGlitchAudio();
-  resizeCanvas();
   buildMinis();
+  resizeCanvas();
   updateGridTargets();
   requestAnimationFrame(frame);
 })();
