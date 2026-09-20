@@ -17,6 +17,7 @@
   const bunkerHazardCtx = bunkerHazardCanvas.getContext('2d');
   let bunkerHazardPattern = null;
   let bunkerFxVisible = false;
+  let bunkerFxDirtyBounds = [];
 
   bunkerHazardCanvas.width = 36;
   bunkerHazardCanvas.height = 36;
@@ -82,6 +83,8 @@
   const CAMERA_POSITION = vec(0, 0, CAMERA_Z);
 
   let bunkerWallCacheReady = false;
+  let bunkerWallInitialized = false;
+  let bunkerWallVisualStates = [];
 
   const bulkheadState = {
     bays: Array.from({ length: navItems.length }, () => ({
@@ -149,22 +152,6 @@
       duration: pressDuration,
       played: false
     }));
-  }
-
-  function getKeypadPressAmount(state, keyIndex, time) {
-    if (!state || !state.isOpening || !state.keypadSequence.length) return 0;
-    const elapsed = time - state.openingStartedAt;
-    let key = null;
-    for (const entry of state.keypadSequence) {
-      if (entry.keyIndex === keyIndex) {
-        key = entry;
-        break;
-      }
-    }
-    if (!key) return 0;
-    const progress = (elapsed - key.start) / key.duration;
-    if (progress <= 0 || progress >= 1) return 0;
-    return Math.sin(Math.PI * progress);
   }
 
   function getKeypadEnteredCount(state, time) {
@@ -280,7 +267,8 @@
     labelUnit: 1,
     labelSize: 11,
     urlSize: 8,
-    stars: []
+    stars: [],
+    visibleStars: []
   };
 
   function getGridShape() {
@@ -475,7 +463,7 @@
     };
   }
 
-  function drawBunkerAperturePath(target, aperture, padding = 0) {
+  function appendBunkerAperturePath(target, aperture, padding = 0) {
     const width = aperture.width + padding * 2;
     const height = aperture.height + padding * 2;
     const cut = clamp(aperture.cut + padding * .18, 8, Math.min(width, height) * .24);
@@ -485,7 +473,6 @@
     const right = aperture.x + halfWidth;
     const top = aperture.y - halfHeight;
     const bottom = aperture.y + halfHeight;
-    target.beginPath();
     target.moveTo(left + cut, top);
     target.lineTo(right - cut, top);
     target.lineTo(right, top + cut);
@@ -495,6 +482,11 @@
     target.lineTo(left, bottom - cut);
     target.lineTo(left, top + cut);
     target.closePath();
+  }
+
+  function drawBunkerAperturePath(target, aperture, padding = 0) {
+    target.beginPath();
+    appendBunkerAperturePath(target, aperture, padding);
   }
 
   function drawHexBolt(target, x, y, radius, alpha = .48) {
@@ -806,7 +798,7 @@
     return bunkerHazardPattern;
   }
 
-  function drawShutterPanel(target, aperture, seam, bayIndex, topPanel, offsetY) {
+  function drawShutterPanelRaw(target, aperture, seam, bayIndex, topPanel, offsetY) {
     const left = aperture.x - aperture.width / 2;
     const right = aperture.x + aperture.width / 2;
     const top = aperture.y - aperture.height / 2;
@@ -874,10 +866,61 @@
     target.restore();
   }
 
-  function drawShutterKeypad(target, aperture, state, offsetY, time, layout) {
+  function drawShutterSprite(target, aperture, sprite, offsetY) {
+    if (!sprite) return false;
+    target.save();
+    drawBunkerAperturePath(target, aperture);
+    target.clip();
+    target.drawImage(
+      sprite.canvas,
+      sprite.left,
+      sprite.top + offsetY,
+      sprite.width,
+      sprite.height
+    );
+    target.restore();
+    return true;
+  }
+
+  function drawShutterPanel(target, aperture, seam, bayIndex, topPanel, offsetY) {
+    const mini = app.minis[bayIndex];
+    const sprite = mini.shutterSprites?.[topPanel ? 'topPanel' : 'bottomPanel'];
+    if (!drawShutterSprite(target, aperture, sprite, offsetY)) {
+      drawShutterPanelRaw(target, aperture, seam, bayIndex, topPanel, offsetY);
+    }
+  }
+
+  function drawIdleShutterKey(target, x, y, width, height) {
+    target.fillStyle = 'rgba(27, 36, 39, .98)';
+    target.strokeStyle = 'rgba(104, 135, 135, .58)';
+    target.shadowColor = 'rgba(0, 0, 0, .4)';
+    target.shadowBlur = 1.5;
+    target.fillRect(x, y, width, height);
+    target.strokeRect(x, y, width, height);
+  }
+
+  function drawShutterKeypadBaseRaw(target, aperture, offsetY, layout) {
     const {
       keypadWidth,
       keypadHeight,
+      keypadLeft,
+      keypadTop
+    } = layout;
+
+    target.save();
+    drawBunkerAperturePath(target, aperture);
+    target.clip();
+    target.translate(0, offsetY);
+    target.fillStyle = 'rgba(6, 12, 15, .9)';
+    target.strokeStyle = 'rgba(123, 161, 160, .5)';
+    target.lineWidth = 1;
+    target.fillRect(keypadLeft, keypadTop, keypadWidth, keypadHeight);
+    target.strokeRect(keypadLeft, keypadTop, keypadWidth, keypadHeight);
+    target.restore();
+  }
+
+  function drawShutterKeypad(target, aperture, state, offsetY, time, layout, bayIndex) {
+    const {
       keypadLeft,
       keypadTop,
       displayHeight,
@@ -891,8 +934,26 @@
       keyWidth,
       keyHeight
     } = layout;
+    const shutterSprites = app.minis[bayIndex]?.shutterSprites;
+    const sprite = shutterSprites?.keypad;
+    const keySprite = shutterSprites?.key;
+    const keyRow = shutterSprites?.keyRow;
+    if (!drawShutterSprite(target, aperture, sprite, offsetY)) {
+      drawShutterKeypadBaseRaw(target, aperture, offsetY, layout);
+    }
     const enteredCount = getKeypadEnteredCount(state, time);
     const elapsed = state?.isOpening ? time - state.openingStartedAt : -1;
+    let activeKeyIndex = -1;
+    let activePressAmount = 0;
+    if (state?.isOpening) {
+      for (const entry of state.keypadSequence) {
+        const progress = (elapsed - entry.start) / entry.duration;
+        if (progress <= 0 || progress >= 1) continue;
+        activeKeyIndex = entry.keyIndex;
+        activePressAmount = Math.sin(Math.PI * progress);
+        break;
+      }
+    }
     const displayResult = elapsed >= BULKHEAD_TIMING.keypadDuration ? state.accessResult : null;
     const displayTone = displayResult === 'granted'
       ? { rgb: '0, 255, 0', color: '#00ff00' }
@@ -904,14 +965,6 @@
     drawBunkerAperturePath(target, aperture);
     target.clip();
     target.translate(0, offsetY);
-
-    // The device is inset from the right/bottom edges and starts below the
-    // lowest point of the concave seam, so it never crosses the seal.
-    target.fillStyle = 'rgba(6, 12, 15, .9)';
-    target.strokeStyle = 'rgba(123, 161, 160, .5)';
-    target.lineWidth = 1;
-    target.fillRect(keypadLeft, keypadTop, keypadWidth, keypadHeight);
-    target.strokeRect(keypadLeft, keypadTop, keypadWidth, keypadHeight);
 
     target.fillStyle = displayResult === 'granted'
       ? 'rgba(0, 150, 28, .94)'
@@ -978,11 +1031,33 @@
     target.stroke();
 
     for (let row = 0; row < 5; row += 1) {
+      const rowTop = keypadTop + padding + row * (keyHeight + gap);
+      if (row !== Math.floor(activeKeyIndex / 4) && keyRow) {
+        target.drawImage(
+          keyRow.canvas,
+          keypadLeft + padding - keyRow.padding,
+          rowTop - keyRow.padding,
+          keyRow.width,
+          keyRow.height
+        );
+        continue;
+      }
       for (let column = 0; column < 4; column += 1) {
         const keyIndex = row * 4 + column;
-        const pressAmount = getKeypadPressAmount(state, keyIndex, time);
+        const pressAmount = keyIndex === activeKeyIndex ? activePressAmount : 0;
         const x = keypadLeft + padding + column * (keyWidth + gap);
-        const y = keypadTop + padding + row * (keyHeight + gap) + pressAmount * 1.5;
+        const baseY = rowTop;
+        if (pressAmount <= 0 && keySprite) {
+          target.drawImage(
+            keySprite.canvas,
+            x - keySprite.padding,
+            baseY - keySprite.padding,
+            keySprite.width,
+            keySprite.height
+          );
+          continue;
+        }
+        const y = baseY + pressAmount * 1.5;
         target.save();
         target.fillStyle = pressAmount > 0
           ? 'rgba(0, 255, 102, .58)'
@@ -1071,10 +1146,93 @@
 
     drawShutterPanel(target, aperture, seam, bayIndex, true, topOffset);
     drawShutterPanel(target, aperture, seam, bayIndex, false, bottomOffset);
-    drawShutterKeypad(target, aperture, state, bottomOffset, time, mini.keypadLayout);
+    drawShutterKeypad(target, aperture, state, bottomOffset, time, mini.keypadLayout, bayIndex);
     drawShutterSlit(target, aperture, topOffset, feedback);
     drawShutterSeam(target, aperture, seam, topOffset);
     drawShutterSeam(target, aperture, seam, bottomOffset);
+  }
+
+  function createShutterSprite(bounds, draw) {
+    const dpr = viewport.dpr;
+    const spriteCanvas = document.createElement('canvas');
+    spriteCanvas.width = Math.max(1, Math.ceil(bounds.width * dpr));
+    spriteCanvas.height = Math.max(1, Math.ceil(bounds.height * dpr));
+    const spriteContext = spriteCanvas.getContext('2d');
+    spriteContext.setTransform(dpr, 0, 0, dpr, -bounds.left * dpr, -bounds.top * dpr);
+    draw(spriteContext);
+    return { canvas: spriteCanvas, ...bounds };
+  }
+
+  function rebuildShutterSprites() {
+    for (const mini of app.minis) {
+      const aperture = mini.aperture;
+      const left = aperture.x - aperture.width / 2;
+      const top = aperture.y - aperture.height / 2;
+      const keypad = mini.keypadLayout;
+      const topPanelBounds = {
+        left,
+        top,
+        width: aperture.width,
+        height: aperture.height * .62
+      };
+      const bottomPanelBounds = {
+        left,
+        top: top + aperture.height * .48,
+        width: aperture.width,
+        height: aperture.height * .52
+      };
+      const keypadLeft = Math.max(left, keypad.keypadLeft - 9);
+      const keypadTop = Math.max(top, keypad.displayTop - 11);
+      const keypadRight = Math.min(left + aperture.width, keypad.keypadLeft + keypad.keypadWidth + 9);
+      const keypadBottom = Math.min(top + aperture.height, keypad.keypadTop + keypad.keypadHeight + 9);
+      const keypadBounds = {
+        left: keypadLeft,
+        top: keypadTop,
+        width: keypadRight - keypadLeft,
+        height: keypadBottom - keypadTop
+      };
+      const keyPadding = 4;
+      const firstKeyX = keypad.keypadLeft + keypad.padding;
+      const firstKeyY = keypad.keypadTop + keypad.padding;
+      const keyBounds = {
+        left: firstKeyX - keyPadding,
+        top: firstKeyY - keyPadding,
+        width: keypad.keyWidth + keyPadding * 2,
+        height: keypad.keyHeight + keyPadding * 2
+      };
+
+      mini.shutterGradients = { top: null, bottom: null };
+      const keySprite = createShutterSprite(keyBounds, (target) => {
+        drawIdleShutterKey(target, firstKeyX, firstKeyY, keypad.keyWidth, keypad.keyHeight);
+      });
+      keySprite.padding = keyPadding;
+      const rowBounds = {
+        left: firstKeyX - keyPadding,
+        top: firstKeyY - keyPadding,
+        width: keypad.keyWidth * 4 + keypad.gap * 3 + keyPadding * 2,
+        height: keypad.keyHeight + keyPadding * 2
+      };
+      const keyRow = createShutterSprite(rowBounds, (target) => {
+        for (let column = 0; column < 4; column += 1) {
+          const x = firstKeyX + column * (keypad.keyWidth + keypad.gap);
+          drawIdleShutterKey(target, x, firstKeyY, keypad.keyWidth, keypad.keyHeight);
+        }
+      });
+      keyRow.padding = keyPadding;
+      mini.shutterSprites = {
+        topPanel: createShutterSprite(topPanelBounds, (target) => {
+          drawShutterPanelRaw(target, aperture, mini.shutterSeam, mini.index, true, 0);
+        }),
+        bottomPanel: createShutterSprite(bottomPanelBounds, (target) => {
+          drawShutterPanelRaw(target, aperture, mini.shutterSeam, mini.index, false, 0);
+        }),
+        keypad: createShutterSprite(keypadBounds, (target) => {
+          drawShutterKeypadBaseRaw(target, aperture, 0, keypad);
+        }),
+        key: keySprite,
+        keyRow
+      };
+    }
   }
 
   function getBulkheadOpeningProgress(bayIndex, time) {
@@ -1200,6 +1358,29 @@
     }
   }
 
+  function getBunkerWallVisualState(mini) {
+    const bayState = bulkheadState.bays[mini.index];
+    const active = app.wallHoveredIndex === mini.index && !bayState.isOpened && !bayState.isOpening;
+    const mode = bayState.isOpening ? 'opening' : bayState.isOpened ? 'opened' : 'closed';
+    return `${mode}:${active ? 1 : 0}`;
+  }
+
+  function copyBunkerRegion(target, source, bounds, clearFirst = false) {
+    const dpr = viewport.dpr;
+    if (clearFirst) target.clearRect(bounds.left, bounds.top, bounds.width, bounds.height);
+    target.drawImage(
+      source,
+      bounds.left * dpr,
+      bounds.top * dpr,
+      bounds.width * dpr,
+      bounds.height * dpr,
+      bounds.left,
+      bounds.top,
+      bounds.width,
+      bounds.height
+    );
+  }
+
   function drawBunkerWall(time = performance.now()) {
     if (!bunkerWallCacheReady) return;
     const width = viewport.width;
@@ -1207,46 +1388,58 @@
     const dpr = viewport.dpr;
     const target = bunkerWallCtx;
     target.setTransform(dpr, 0, 0, dpr, 0, 0);
-    target.globalCompositeOperation = 'copy';
-    target.drawImage(bunkerWallRestingCacheCanvas, 0, 0, width, height);
     target.globalCompositeOperation = 'source-over';
+
+    const currentVisualStates = app.minis.map(getBunkerWallVisualState);
+    const dirtyMinis = bunkerWallInitialized
+      ? app.minis.filter((mini) => {
+        const bayState = bulkheadState.bays[mini.index];
+        return bayState.isOpening || currentVisualStates[mini.index] !== bunkerWallVisualStates[mini.index];
+      })
+      : app.minis.slice();
+    if (!dirtyMinis.length) return;
+
+    const dirtyBounds = bunkerWallInitialized
+      ? dirtyMinis.map((mini) => mini.bunkerRenderBounds)
+      : [{ left: 0, top: 0, right: width, bottom: height, width, height }];
+
+    if (!bunkerWallInitialized) {
+      target.globalCompositeOperation = 'copy';
+      target.drawImage(bunkerWallRestingCacheCanvas, 0, 0, width, height);
+      target.globalCompositeOperation = 'source-over';
+    } else {
+      for (const bounds of dirtyBounds) {
+        copyBunkerRegion(target, bunkerWallRestingCacheCanvas, bounds, true);
+      }
+    }
 
     const changedMinis = app.minis.filter((mini) => {
       const bayState = bulkheadState.bays[mini.index];
       const active = app.wallHoveredIndex === mini.index && !bayState.isOpened && !bayState.isOpening;
-      return active || bayState.isOpened || bayState.isOpening;
+      return (active || bayState.isOpened || bayState.isOpening) &&
+        dirtyBounds.some((bounds) => boundsIntersect(bounds, mini.bunkerRenderBounds));
     });
-    if (!changedMinis.length) return;
-
     const changedBounds = changedMinis.map((mini) => mini.bunkerRenderBounds);
-    for (const bounds of changedBounds) {
-      target.drawImage(
-        bunkerWallCacheCanvas,
-        bounds.left * dpr,
-        bounds.top * dpr,
-        bounds.width * dpr,
-        bounds.height * dpr,
-        bounds.left,
-        bounds.top,
-        bounds.width,
-        bounds.height
-      );
+    if (changedBounds.length) {
+      target.save();
+      target.beginPath();
+      for (const bounds of dirtyBounds) {
+        target.rect(bounds.left, bounds.top, bounds.width, bounds.height);
+      }
+      target.clip();
+      for (const bounds of changedBounds) copyBunkerRegion(target, bunkerWallCacheCanvas, bounds);
+      for (const mini of app.minis) {
+        const renderBounds = mini.bunkerRenderBounds;
+        if (!changedBounds.some((bounds) => boundsIntersect(bounds, renderBounds))) continue;
+        const bayState = bulkheadState.bays[mini.index];
+        const active = app.wallHoveredIndex === mini.index && !bayState.isOpened && !bayState.isOpening;
+        drawBunkerBay(target, mini, bayState, time, active);
+      }
+      target.restore();
     }
 
-    target.save();
-    target.beginPath();
-    for (const bounds of changedBounds) {
-      target.rect(bounds.left, bounds.top, bounds.width, bounds.height);
-    }
-    target.clip();
-    for (const mini of app.minis) {
-      const renderBounds = mini.bunkerRenderBounds;
-      if (!changedBounds.some((bounds) => boundsIntersect(bounds, renderBounds))) continue;
-      const bayState = bulkheadState.bays[mini.index];
-      const active = app.wallHoveredIndex === mini.index && !bayState.isOpened && !bayState.isOpening;
-      drawBunkerBay(target, mini, bayState, time, active);
-    }
-    target.restore();
+    bunkerWallVisualStates = currentVisualStates;
+    bunkerWallInitialized = true;
   }
 
   function hasPersistentApertureFx(state) {
@@ -1255,31 +1448,23 @@
 
   function drawBunkerLedFx(time = performance.now()) {
     const target = bunkerFxCtx;
-    const hasFx = bulkheadState.bays.some((bayState, index) => {
-      const persistent = hasPersistentApertureFx(bayState);
-      const pulseActive = !persistent && !bayState.isOpening &&
-        index === app.wallHoveredIndex && time < bayState.wallPulseUntil;
-      return persistent || pulseActive;
-    });
-    if (!hasFx) {
-      if (bunkerFxVisible) {
-        target.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
-        target.clearRect(0, 0, viewport.width, viewport.height);
-        bunkerFxVisible = false;
-      }
-      return;
-    }
-
-    target.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
-    target.clearRect(0, 0, viewport.width, viewport.height);
-    bunkerFxVisible = true;
-
-    for (const mini of app.minis) {
+    const activeMinis = app.minis.filter((mini) => {
       const bayState = bulkheadState.bays[mini.index];
       const persistent = hasPersistentApertureFx(bayState);
       const pulseActive = !persistent && !bayState.isOpening &&
         mini.index === app.wallHoveredIndex && time < bayState.wallPulseUntil;
-      if (!persistent && !pulseActive) continue;
+      return persistent || pulseActive;
+    });
+
+    target.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
+    for (const bounds of bunkerFxDirtyBounds) {
+      target.clearRect(bounds.left, bounds.top, bounds.width, bounds.height);
+    }
+    bunkerFxDirtyBounds = activeMinis.map((mini) => mini.bunkerRenderBounds);
+    bunkerFxVisible = activeMinis.length > 0;
+    if (!bunkerFxVisible) return;
+
+    for (const mini of activeMinis) {
       const aperture = mini.aperture;
       const fxGeometry = mini.apertureFxGeometry;
       if (!fxGeometry) continue;
@@ -1325,6 +1510,7 @@
     bunkerFxCanvas.width = Math.round(width * dpr);
     bunkerFxCanvas.height = Math.round(height * dpr);
     bunkerFxVisible = false;
+    bunkerFxDirtyBounds = [];
     bunkerFxCanvas.style.width = `${width}px`;
     bunkerFxCanvas.style.height = `${height}px`;
     bunkerFxCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1348,8 +1534,11 @@
     bunkerWallCacheCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     bunkerWallRestingCacheCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     bunkerWallCacheReady = true;
+    bunkerWallInitialized = false;
+    bunkerWallVisualStates = [];
     bunkerWallCacheCtx.clearRect(0, 0, width, height);
     drawBunkerWallSurface(bunkerWallCacheCtx);
+    rebuildShutterSprites();
     rebuildBunkerWallRestingCache();
     drawBunkerWall();
     resizeBunkerFx();
@@ -1423,16 +1612,36 @@
   function drawBackground(time) {
     const w = viewport.width;
     const h = viewport.height;
+    const dpr = viewport.dpr;
 
     ctx.save();
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
     ctx.filter = 'none';
-    ctx.drawImage(backgroundCache.canvas, 0, 0, w, h);
+    if (app.minis.length) {
+      for (const mini of app.minis) {
+        const aperture = mini.aperture;
+        const left = aperture.x - aperture.width / 2;
+        const top = aperture.y - aperture.height / 2;
+        ctx.drawImage(
+          backgroundCache.canvas,
+          left * dpr,
+          top * dpr,
+          aperture.width * dpr,
+          aperture.height * dpr,
+          left,
+          top,
+          aperture.width,
+          aperture.height
+        );
+      }
+    } else {
+      ctx.drawImage(backgroundCache.canvas, 0, 0, w, h);
+    }
     ctx.restore();
 
     ctx.save();
-    for (const star of viewport.stars) {
+    for (const star of viewport.visibleStars) {
       const shimmer = .74 + Math.sin(time * .00045 + star.phase) * .26;
       ctx.globalAlpha = star.alpha * shimmer;
       ctx.fillStyle = star.radius > 1 ? '#c0faff' : '#ffffff';
@@ -2023,6 +2232,7 @@
     pointerActive: false,
     pointer: { x: -9999, y: -9999 },
     minis: [],
+    sceneClipPath: null,
     lastTime: performance.now(),
     lastFrameAt: 0,
     frameRequest: 0
@@ -2124,6 +2334,7 @@
       shutterSeam: null,
       keypadLayout: null,
       shutterGradients: { top: null, bottom: null },
+      shutterSprites: null,
       renderGeometry: createCubeRenderGeometry(),
       half: MINI_GRID_HALF,
       rotation: {
@@ -2160,6 +2371,7 @@
     const layout = getResponsiveGridLayout();
     const apertureSize = layout.apertureSize;
     const apertureCut = clamp(apertureSize * .2, 10, 34);
+    const sceneClipPath = new Path2D();
     for (const mini of app.minis) {
       mini.column = mini.index % layout.columns;
       mini.row = Math.floor(mini.index / layout.columns);
@@ -2178,7 +2390,19 @@
       mini.shutterSeam = getShutterSeamPoints(mini.aperture);
       mini.keypadLayout = getShutterKeypadLayout(mini.aperture);
       mini.shutterGradients = { top: null, bottom: null };
+      mini.shutterSprites = null;
+      appendBunkerAperturePath(sceneClipPath, mini.aperture);
     }
+    app.sceneClipPath = sceneClipPath;
+    viewport.visibleStars = viewport.stars.filter((star) => {
+      const x = star.x * viewport.width;
+      const y = star.y * viewport.height;
+      return app.minis.some((mini) => {
+        const aperture = mini.aperture;
+        return Math.abs(x - aperture.x) <= aperture.width / 2 + star.radius &&
+          Math.abs(y - aperture.y) <= aperture.height / 2 + star.radius;
+      });
+    });
   }
 
   function triggerMiniRotationBoost(time) {
@@ -2344,6 +2568,8 @@
   }
 
   function render(time) {
+    ctx.save();
+    if (app.sceneClipPath) ctx.clip(app.sceneClipPath);
     drawBackground(time);
     updateGlitch(time);
 
@@ -2351,6 +2577,7 @@
     for (const mini of app.minis) renderMini(mini, time, frameSeed);
     ctx.save();
     for (const mini of app.minis) drawCubeLabel(mini);
+    ctx.restore();
     ctx.restore();
 
     if (app.pointerActive) updateHover();
