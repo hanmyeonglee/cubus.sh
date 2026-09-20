@@ -1,0 +1,15 @@
+# cubus.sh
+
+> cubus.sh is an interactive, canvas-based gateway to the cubus.sh web presence.
+
+The home page presents a three-dimensional visual navigation interface. It is a
+static site and does not expose an API, authentication flow, or documentation.
+
+## Pages
+
+- [Home](https://cubus.sh/): Interactive visual navigation.
+- [About](https://about.cubus.sh/): About page linked from the home page.
+
+## Source
+
+- [GitHub repository](https://github.com/hanmyeonglee/cubus.sh): Source code for the home page.

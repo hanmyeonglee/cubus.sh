@@ -1,0 +1,4 @@
+Contact: https://github.com/hanmyeonglee/cubus.sh/security/advisories/new
+Expires: 2027-09-19T00:00:00Z
+Preferred-Languages: ko, en
+Canonical: https://cubus.sh/.well-known/security.txt

@@ -1,0 +1,7 @@
+/* SITE */
+Name: cubus.sh
+URL: https://cubus.sh/
+Language: English
+
+/* SOURCE */
+Repository: https://github.com/hanmyeonglee/cubus.sh
