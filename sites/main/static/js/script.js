@@ -476,8 +476,10 @@
     target.strokeStyle = 'rgba(102, 145, 148, .38)';
     target.lineWidth = 2;
     target.stroke();
-    target.strokeStyle = 'rgba(0, 240, 255, .22)';
-    target.lineWidth = 1;
+    target.strokeStyle = 'rgba(0, 240, 255, .62)';
+    target.lineWidth = 1.5;
+    target.shadowColor = 'rgba(0, 240, 255, .9)';
+    target.shadowBlur = 10;
     target.stroke();
     target.restore();
 
@@ -497,13 +499,23 @@
     drawBunkerBarcode(target, width * .955 - clamp(width * .085, 54, 105), height * .84, clamp(width * .085, 54, 105), 24, 47);
 
     target.save();
-    target.fillStyle = 'rgba(0, 240, 255, .56)';
-    target.shadowColor = 'rgba(0, 240, 255, .55)';
-    target.shadowBlur = 6;
+    target.globalCompositeOperation = 'lighter';
+    target.fillStyle = 'rgba(0, 240, 255, .24)';
+    target.shadowColor = 'rgba(0, 240, 255, .98)';
+    target.shadowBlur = 15;
     for (let i = 0; i < 12; i += 1) {
       const y = height * (.17 + i * .056);
-      target.fillRect(width * .035, y, 5 + (i % 3) * 3, 2);
-      target.fillRect(width * .965 - 8 - (i % 3) * 3, y, 5 + (i % 3) * 3, 2);
+      const tickWidth = 5 + (i % 3) * 3;
+      target.fillRect(width * .035 - 1, y - 1, tickWidth + 2, 4);
+      target.fillRect(width * .965 - 7 - (i % 3) * 3, y - 1, tickWidth + 2, 4);
+    }
+    target.shadowBlur = 5;
+    target.fillStyle = 'rgba(177, 255, 255, .96)';
+    for (let i = 0; i < 12; i += 1) {
+      const y = height * (.17 + i * .056);
+      const tickWidth = 5 + (i % 3) * 3;
+      target.fillRect(width * .035, y, tickWidth, 2);
+      target.fillRect(width * .965 - 8 - (i % 3) * 3, y, tickWidth, 2);
     }
     target.restore();
   }
