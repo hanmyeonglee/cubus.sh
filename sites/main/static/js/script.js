@@ -86,6 +86,7 @@
     BULKHEAD_TIMING.unlockDuration +
     BULKHEAD_TIMING.slideDuration;
   const BUNKER_APERTURE_HIT_INSET = -3;
+  const BUNKER_APERTURE_FX_PADDING = -3;
   const KEYPAD_KEY_COUNT = 20;
 
   function createKeypadSequence() {
@@ -190,8 +191,6 @@
     labelUnit: 1,
     labelSize: 11,
     urlSize: 8,
-    fxCyanDash: [9, 48],
-    fxMagentaDash: [6, 62],
     stars: []
   };
 
@@ -268,6 +267,42 @@
       { x: left, y: bottom - cut },
       { x: left, y: top + cut }
     ];
+  }
+
+  function getClosedPathLength(points) {
+    let length = 0;
+    for (let index = 0; index < points.length; index += 1) {
+      const current = points[index];
+      const next = points[(index + 1) % points.length];
+      const deltaX = next.x - current.x;
+      const deltaY = next.y - current.y;
+      length += Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    }
+    return length;
+  }
+
+  function createApertureFxGeometry(aperture) {
+    const path = getBunkerAperturePoints(aperture, BUNKER_APERTURE_FX_PADDING);
+    const perimeter = getClosedPathLength(path);
+    const createLedSet = (segmentLength) => {
+      const gapLength = Math.max(2, (perimeter - segmentLength * 4) / 4);
+      const dash = [
+        segmentLength, gapLength,
+        segmentLength, gapLength,
+        segmentLength, gapLength,
+        segmentLength, gapLength
+      ];
+      return {
+        dash,
+        cycle: dash.reduce((sum, value) => sum + value, 0)
+      };
+    };
+
+    return {
+      perimeter,
+      cyan: createLedSet(Math.max(9, aperture.width * .14)),
+      magenta: createLedSet(Math.max(6, aperture.width * .09))
+    };
   }
 
   function drawBunkerAperturePath(target, aperture, padding = 0) {
@@ -434,9 +469,9 @@
     target.moveTo(width * .025, height * .18);
     target.lineTo(width * .025, height * .82);
     target.lineTo(width * .08, height * .86);
-    target.moveTo(width * .975, height * .18);
-    target.lineTo(width * .975, height * .82);
-    target.lineTo(width * .92, height * .86);
+    target.moveTo(width * .975, height * .86);
+    target.lineTo(width * .975, height * .18);
+    target.lineTo(width * .92, height * .14);
     target.stroke();
     target.strokeStyle = 'rgba(102, 145, 148, .38)';
     target.lineWidth = 2;
@@ -891,20 +926,25 @@
       const pulseActive = !persistent && mini.index === app.wallHoveredIndex && time < bayState.wallPulseUntil;
       if (!persistent && !pulseActive) continue;
       const aperture = mini.aperture;
-      const phase = (time * .00072 + mini.index * .17) % 1;
+      const fxGeometry = mini.apertureFxGeometry;
+      if (!fxGeometry) continue;
+      const cyanTravel = ((time * .00072 + mini.index * .17) * 140) % fxGeometry.cyan.cycle;
+      const magentaTravel = ((time * .00072 + mini.index * .17) * 180 + 36) % fxGeometry.magenta.cycle;
       const breathe = .56 + Math.sin(time * .006 + mini.index * .8) * .22;
       target.save();
-      drawBunkerAperturePath(target, aperture, -3);
+      drawBunkerAperturePath(target, aperture, BUNKER_APERTURE_FX_PADDING);
       target.strokeStyle = `rgba(0, 240, 255, ${.24 + breathe * .18})`;
       target.lineWidth = 2;
       target.shadowColor = 'rgba(0, 240, 255, .72)';
       target.shadowBlur = 10;
       target.stroke();
-      target.setLineDash(viewport.fxCyanDash);
-      target.lineDashOffset = -phase * 140;
+      target.setLineDash(fxGeometry.cyan.dash);
+      target.lineDashOffset = -cyanTravel;
       target.strokeStyle = `rgba(0, 240, 255, ${.48 + breathe * .28})`;
       target.lineWidth = 1.5;
       target.shadowBlur = 14;
+      target.stroke();
+      target.lineDashOffset = -(cyanTravel + fxGeometry.cyan.cycle * .125);
       target.stroke();
       target.setLineDash([]);
       target.lineDashOffset = 0;
@@ -912,9 +952,13 @@
       target.lineWidth = 1;
       target.shadowColor = 'rgba(198, 44, 255, .66)';
       target.shadowBlur = 8;
-      target.setLineDash(viewport.fxMagentaDash);
-      target.lineDashOffset = phase * 180 + 36;
+      target.setLineDash(fxGeometry.magenta.dash);
+      target.lineDashOffset = -magentaTravel;
       target.stroke();
+      target.lineDashOffset = -(magentaTravel + fxGeometry.magenta.cycle * .125);
+      target.stroke();
+      target.setLineDash([]);
+      target.lineDashOffset = 0;
       target.restore();
     }
   }
@@ -1702,6 +1746,7 @@
       position: vec(),
       aperture: null,
       apertureHitPoints: null,
+      apertureFxGeometry: null,
       shutterSeam: null,
       keypadLayout: null,
       shutterGradients: { top: null, bottom: null },
@@ -1745,8 +1790,6 @@
     const apertureWidth = clamp(cellWidth * .72, 44, 220);
     const apertureHeight = clamp(Math.min(viewport.height * .30, rowGap * .78), 104, 250);
     const apertureCut = clamp(Math.min(apertureWidth * .2, apertureHeight * .2), 10, 34);
-    viewport.fxCyanDash = [Math.max(9, apertureWidth * .14), Math.max(48, apertureWidth * .8)];
-    viewport.fxMagentaDash = [Math.max(6, apertureWidth * .09), Math.max(62, apertureWidth * .95)];
     for (const mini of app.minis) {
       const anchor = gridScreenAnchor(mini.column, mini.row);
       mini.position = screenToWorld(anchor.x, anchor.y, mini.depth);
@@ -1758,6 +1801,7 @@
         cut: apertureCut
       };
       mini.apertureHitPoints = getBunkerAperturePoints(mini.aperture, BUNKER_APERTURE_HIT_INSET);
+      mini.apertureFxGeometry = createApertureFxGeometry(mini.aperture);
       mini.shutterSeam = getShutterSeamPoints(mini.aperture);
       mini.keypadLayout = getShutterKeypadLayout(mini.aperture);
       mini.shutterGradients = { top: null, bottom: null };
