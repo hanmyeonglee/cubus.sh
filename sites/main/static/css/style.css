@@ -24,6 +24,7 @@ body {
   z-index: 0;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   outline: none;
   touch-action: none;
   cursor: default;
@@ -39,6 +40,7 @@ body {
   display: block;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   pointer-events: none;
 }
 
@@ -49,6 +51,7 @@ body {
   display: block;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   pointer-events: none;
 }
 
@@ -72,6 +75,14 @@ body {
 .bunker-led--right-top { top: 26%; right: 3.5%; animation-delay: -1.2s; }
 .bunker-led--left-bottom { bottom: 24%; left: 3.5%; animation-delay: -.7s; }
 .bunker-led--right-bottom { right: 3.5%; bottom: 16%; animation-delay: -2.1s; }
+
+@media (orientation: portrait) {
+  .bunker-led { width: 7px; }
+  .bunker-led--left-top { top: 27%; left: 2.5%; }
+  .bunker-led--right-top { top: 50%; right: 2.5%; }
+  .bunker-led--left-bottom { bottom: 27%; left: 2.5%; }
+  .bunker-led--right-bottom { right: 2.5%; bottom: 4%; }
+}
 
 @keyframes bunker-led-blink {
   0%, 34% { opacity: .24; }

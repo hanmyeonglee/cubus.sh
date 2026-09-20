@@ -9,6 +9,8 @@
   const bunkerFxCtx = bunkerFxCanvas.getContext('2d');
   const bunkerWallCacheCanvas = document.createElement('canvas');
   const bunkerWallCacheCtx = bunkerWallCacheCanvas.getContext('2d');
+  const bunkerWallTextureCanvas = document.createElement('canvas');
+  const bunkerWallTextureCtx = bunkerWallTextureCanvas.getContext('2d');
   const bunkerHazardCanvas = document.createElement('canvas');
   const bunkerHazardCtx = bunkerHazardCanvas.getContext('2d');
   let bunkerHazardPattern = null;
@@ -110,6 +112,16 @@
   const NO_BULKHEAD_FEEDBACK = Object.freeze({ tone: '', rgb: '', color: '', intensity: 0 });
   const BUNKER_APERTURE_HIT_INSET = -3;
   const BUNKER_APERTURE_FX_PADDING = -3;
+  const BUNKER_APERTURE_FRAME_PADDING_MAX = 18;
+  const BUNKER_APERTURE_FRAME_PADDING_RATIO = .12;
+  const BUNKER_APERTURE_FRAME_STROKE_HALF = 2.5;
+  const BUNKER_APERTURE_PLATE_PADDING_RATIO = .13;
+  const BUNKER_APERTURE_PLATE_PADDING_MIN = 8;
+  const BUNKER_APERTURE_PLATE_PADDING_MAX = 30;
+  const BUNKER_APERTURE_PLATE_STROKE_HALF = .5;
+  const BUNKER_APERTURE_MIN_GAP = 8; // Minimum clear space between complete outer bounds.
+  const BUNKER_APERTURE_MAX_GAP = 56; // Prevents the grid from spreading across ultrawide screens.
+  const BUNKER_APERTURE_MAX_SIZE = 220;
   const KEYPAD_KEY_COUNT = 20;
 
   function createKeypadSequence() {
@@ -204,6 +216,46 @@
     return (value - Math.floor(value)) * 2 - 1;
   }
 
+  function buildBunkerWallTextureTile() {
+    const size = 128;
+    bunkerWallTextureCanvas.width = size;
+    bunkerWallTextureCanvas.height = size;
+    bunkerWallTextureCtx.clearRect(0, 0, size, size);
+
+    const drawWrappedMark = (x, y, width, height, color) => {
+      bunkerWallTextureCtx.fillStyle = color;
+      for (const offsetX of [-size, 0, size]) {
+        for (const offsetY of [-size, 0, size]) {
+          const wrappedX = x + offsetX;
+          const wrappedY = y + offsetY;
+          if (wrappedX + width <= 0 || wrappedX >= size || wrappedY + height <= 0 || wrappedY >= size) continue;
+          bunkerWallTextureCtx.fillRect(wrappedX, wrappedY, width, height);
+        }
+      }
+    };
+
+    for (let index = 0; index < 720; index += 1) {
+      const x = ((hashNoise(index * 2.71 + 4) + 1) / 2) * size;
+      const y = ((hashNoise(index * 4.83 + 19) + 1) / 2) * size;
+      const tone = (hashNoise(index * 8.19 + 33) + 1) / 2;
+      const markSize = tone > .84 ? 2 : 1;
+      const alpha = tone > .55 ? .052 : .078;
+      const color = tone > .55
+        ? `rgba(215, 217, 204, ${alpha})`
+        : `rgba(0, 0, 0, ${alpha})`;
+      drawWrappedMark(x, y, markSize, markSize, color);
+    }
+
+    for (let index = 0; index < 36; index += 1) {
+      const x = ((hashNoise(index * 11.13 + 71) + 1) / 2) * size;
+      const y = ((hashNoise(index * 13.47 + 29) + 1) / 2) * size;
+      const length = 3 + Math.round(((hashNoise(index * 5.31 + 101) + 1) / 2) * 8);
+      drawWrappedMark(x, y, length, 1, 'rgba(0, 0, 0, .11)');
+    }
+  }
+
+  buildBunkerWallTextureTile();
+
   const viewport = {
     width: window.innerWidth,
     height: window.innerHeight,
@@ -216,6 +268,41 @@
     urlSize: 8,
     stars: []
   };
+
+  function getGridShape() {
+    const columns = viewport.height > viewport.width ? 2 : 4;
+    return { columns, rows: navItems.length / columns };
+  }
+
+  function fitApertureSizeToPitch(preferredSize, pitch) {
+    let lower = 0;
+    let upper = preferredSize;
+    for (let iteration = 0; iteration < 18; iteration += 1) {
+      const candidate = (lower + upper) / 2;
+      const outerInset = getApertureOuterInset(candidate);
+      if (candidate + outerInset * 2 + BUNKER_APERTURE_MIN_GAP <= pitch) lower = candidate;
+      else upper = candidate;
+    }
+    return lower;
+  }
+
+  function getResponsiveGridLayout() {
+    const gridShape = getGridShape();
+    const verticalInset = viewport.height * (gridShape.rows === 2 ? .12 : .06);
+    const outerWallMargin = clamp(Math.min(viewport.width, viewport.height) * .035, 12, 48);
+    const availablePitchX = Math.max(1, viewport.width - outerWallMargin * 2) / gridShape.columns;
+    const availablePitchY = (viewport.height - verticalInset * 2) / gridShape.rows;
+    const largestCenterPitch = BUNKER_APERTURE_MAX_SIZE +
+      getApertureOuterInset(BUNKER_APERTURE_MAX_SIZE) * 2 + BUNKER_APERTURE_MAX_GAP;
+    const sizingPitchX = Math.min(availablePitchX, largestCenterPitch);
+    const sizingPitchY = Math.min(availablePitchY, largestCenterPitch);
+    const preferredSize = Math.min(BUNKER_APERTURE_MAX_SIZE, Math.min(sizingPitchX, sizingPitchY) * .82);
+    const apertureSize = fitApertureSizeToPitch(preferredSize, Math.min(sizingPitchX, sizingPitchY));
+    const maxCenterPitch = apertureSize + getApertureOuterInset(apertureSize) * 2 + BUNKER_APERTURE_MAX_GAP;
+    const pitchX = Math.min(availablePitchX, maxCenterPitch);
+    const pitchY = Math.min(availablePitchY, maxCenterPitch);
+    return { ...gridShape, pitchX, pitchY, apertureSize, outerWallMargin };
+  }
 
   const backgroundCache = {
     canvas: null
@@ -268,6 +355,37 @@
     const perspective = CAMERA_FOCAL / depth;
     const unit = viewport.scale * perspective;
     return vec((x - viewport.centerX) / unit, -(y - viewport.centerY) / unit, z);
+  }
+
+  function getApertureFramePadding(size) {
+    return Math.min(BUNKER_APERTURE_FRAME_PADDING_MAX, size * BUNKER_APERTURE_FRAME_PADDING_RATIO);
+  }
+
+  function getAperturePlatePadding(size) {
+    return clamp(
+      size * BUNKER_APERTURE_PLATE_PADDING_RATIO,
+      BUNKER_APERTURE_PLATE_PADDING_MIN,
+      BUNKER_APERTURE_PLATE_PADDING_MAX
+    );
+  }
+
+  function getApertureOuterInset(size) {
+    // Include both the beveled frame stroke and the enclosing armor-plate stroke.
+    const framedEdge = getApertureFramePadding(size) + BUNKER_APERTURE_FRAME_STROKE_HALF;
+    const platedEdge = getAperturePlatePadding(size) + BUNKER_APERTURE_PLATE_STROKE_HALF;
+    return Math.max(framedEdge, platedEdge);
+  }
+
+  function getApertureOuterBounds(aperture) {
+    const width = aperture.width;
+    const height = aperture.height;
+    const outerInset = getApertureOuterInset(Math.max(width, height));
+    return {
+      left: aperture.x - width / 2 - outerInset,
+      top: aperture.y - height / 2 - outerInset,
+      width: width + outerInset * 2,
+      height: height + outerInset * 2
+    };
   }
 
   function getBunkerAperturePoints(aperture, padding = 0) {
@@ -406,6 +524,7 @@
   function drawBunkerWallSurface(target) {
     const width = viewport.width;
     const height = viewport.height;
+    const panelPitch = 240;
     const base = target.createLinearGradient(0, 0, width, height);
     base.addColorStop(0, '#3a3d3e');
     base.addColorStop(.42, '#252a2d');
@@ -421,27 +540,24 @@
     target.fillStyle = 'rgba(6, 10, 13, .28)';
     target.fillRect(0, height * .89, width, height * .11);
 
-    const speckCount = Math.round(clamp(width * height / 14000, 80, 420));
-    for (let i = 0; i < speckCount; i += 1) {
-      const normalizedX = (hashNoise(i * 2.71 + 4) + 1) / 2;
-      const normalizedY = (hashNoise(i * 4.83 + 19) + 1) / 2;
-      const tone = (hashNoise(i * 8.19 + 33) + 1) / 2;
-      target.fillStyle = tone > .55 ? 'rgba(215, 217, 204, .055)' : 'rgba(0, 0, 0, .09)';
-      target.fillRect(normalizedX * width, normalizedY * height, tone > .7 ? 2 : 1, tone > .7 ? 2 : 1);
+    const wallTexture = target.createPattern(bunkerWallTextureCanvas, 'repeat');
+    if (wallTexture) {
+      target.save();
+      target.fillStyle = wallTexture;
+      target.fillRect(0, 0, width, height);
+      target.restore();
     }
 
     target.save();
     target.lineWidth = 1;
     target.strokeStyle = 'rgba(4, 8, 11, .48)';
-    for (let column = 1; column < 8; column += 1) {
-      const x = width * column / 8;
+    for (let x = panelPitch; x < width; x += panelPitch) {
       target.beginPath();
       target.moveTo(x, 0);
       target.lineTo(x, height);
       target.stroke();
     }
-    for (let row = 1; row < 8; row += 1) {
-      const y = height * row / 8;
+    for (let y = panelPitch; y < height; y += panelPitch) {
       target.beginPath();
       target.moveTo(0, y);
       target.lineTo(width, y);
@@ -467,12 +583,11 @@
 
     for (const mini of app.minis) {
       const aperture = mini.aperture;
-      const platePaddingX = Math.min(34, width * .035);
-      const platePaddingY = Math.min(30, height * .035);
-      const plateLeft = aperture.x - aperture.width / 2 - platePaddingX;
-      const plateTop = aperture.y - aperture.height / 2 - platePaddingY;
-      const plateWidth = aperture.width + platePaddingX * 2;
-      const plateHeight = aperture.height + platePaddingY * 2;
+      const plateBounds = getApertureOuterBounds(aperture);
+      const plateLeft = plateBounds.left;
+      const plateTop = plateBounds.top;
+      const plateWidth = plateBounds.width;
+      const plateHeight = plateBounds.height;
       target.strokeStyle = 'rgba(206, 214, 207, .13)';
       target.lineWidth = 1;
       target.strokeRect(plateLeft, plateTop, plateWidth, plateHeight);
@@ -508,18 +623,46 @@
 
     const boltRadius = clamp(Math.min(width, height) * .006, 3, 5);
     const edgeInset = clamp(Math.min(width, height) * .026, 16, 30);
-    for (let i = 0; i < 7; i += 1) {
-      const x = edgeInset + (width - edgeInset * 2) * i / 6;
+    let lastBoltX = edgeInset - panelPitch;
+    for (let x = edgeInset; x <= width - edgeInset; x += panelPitch) {
+      drawHexBolt(target, x, edgeInset, boltRadius, .56);
+      drawHexBolt(target, x, height - edgeInset, boltRadius, .56);
+      lastBoltX = x;
+    }
+    if (width - edgeInset - lastBoltX > panelPitch * .42) {
+      const x = width - edgeInset;
       drawHexBolt(target, x, edgeInset, boltRadius, .56);
       drawHexBolt(target, x, height - edgeInset, boltRadius, .56);
     }
 
+    const gridLayout = getResponsiveGridLayout();
     drawBunkerWallText(target, 'SECTOR 04-B', width * .045, height * .055);
     drawBunkerWallText(target, 'ARMOR PLATE // T-09', width * .955, height * .055, 'right', .36);
     drawBunkerWallText(target, 'CAUTION: HIGH VOLTAGE', width * .045, height * .955, 'left', .4);
     drawBunkerWallText(target, 'REINFORCED CONCRETE // 4200 PSI', width * .955, height * .955, 'right', .34);
-    drawBunkerBarcode(target, width * .045, height * .12, clamp(width * .085, 54, 105), 24, 17);
-    drawBunkerBarcode(target, width * .955 - clamp(width * .085, 54, 105), height * .84, clamp(width * .085, 54, 105), 24, 47);
+    if (gridLayout.columns === 2) {
+      const barcodeWidth = clamp(width * .17, 42, 72);
+      const barcodeX = (width - barcodeWidth) / 2;
+      drawBunkerBarcode(target, barcodeX, height * .025, barcodeWidth, 18, 17);
+      drawBunkerBarcode(target, barcodeX, height * .975 - 18, barcodeWidth, 18, 47);
+    } else {
+      const barcodeWidth = clamp(width * .085, 54, 105);
+      drawBunkerBarcode(target, width * .045, height * .12, barcodeWidth, 24, 17);
+      drawBunkerBarcode(target, width * .955 - barcodeWidth, height * .84, barcodeWidth, 24, 47);
+    }
+    if (gridLayout.columns === 4) {
+      const gridOuterWidth = (gridLayout.columns - 1) * gridLayout.pitchX +
+        gridLayout.apertureSize + getApertureOuterInset(gridLayout.apertureSize) * 2;
+      const gridLeft = (width - gridOuterWidth) / 2;
+      const gridRight = gridLeft + gridOuterWidth;
+      if (gridLeft > panelPitch * .7) {
+        for (let x = panelPitch / 2; x < width - panelPitch / 2; x += panelPitch) {
+          if (x < gridLeft - 52 || x > gridRight + 52) {
+            drawBunkerWallText(target, 'ARMOR // T-09', x, height * .10, 'center', .24);
+          }
+        }
+      }
+    }
 
     target.save();
     target.globalCompositeOperation = 'lighter';
@@ -958,7 +1101,7 @@
       const aperture = mini.aperture;
       const active = app.wallHoveredIndex === mini.index && !bayState.isOpened && !bayState.isOpening;
       target.save();
-      drawBunkerAperturePath(target, aperture, 18);
+      drawBunkerAperturePath(target, aperture, getApertureFramePadding(aperture.width));
       target.fillStyle = active ? 'rgba(9, 24, 28, .98)' : 'rgba(13, 18, 22, .98)';
       target.strokeStyle = active ? 'rgba(167, 224, 218, .92)' : 'rgba(131, 143, 142, .7)';
       target.lineWidth = active ? 2.4 : 1.5;
@@ -1898,28 +2041,26 @@
     }
   }
 
-  function gridScreenAnchor(column, row) {
-    const x = viewport.width * ((column + .5) / 4);
-    const top = clamp(viewport.height * .335, 150, 260);
-    const bottom = clamp(viewport.height * .685, 365, viewport.height - 120);
-    const y = row === 0 ? top : Math.max(top + 112, bottom);
+  function gridScreenAnchor(column, row, layout = getResponsiveGridLayout()) {
+    const x = viewport.centerX + (column - (layout.columns - 1) / 2) * layout.pitchX;
+    const y = viewport.centerY + (row - (layout.rows - 1) / 2) * layout.pitchY;
     return { x, y };
   }
 
   function updateGridTargets() {
-    const cellWidth = viewport.width / 4;
-    const rowGap = Math.abs(gridScreenAnchor(0, 1).y - gridScreenAnchor(0, 0).y);
-    const apertureWidth = clamp(cellWidth * .72, 44, 220);
-    const apertureHeight = clamp(Math.min(viewport.height * .30, rowGap * .78), 104, 250);
-    const apertureCut = clamp(Math.min(apertureWidth * .2, apertureHeight * .2), 10, 34);
+    const layout = getResponsiveGridLayout();
+    const apertureSize = layout.apertureSize;
+    const apertureCut = clamp(apertureSize * .2, 10, 34);
     for (const mini of app.minis) {
-      const anchor = gridScreenAnchor(mini.column, mini.row);
+      mini.column = mini.index % layout.columns;
+      mini.row = Math.floor(mini.index / layout.columns);
+      const anchor = gridScreenAnchor(mini.column, mini.row, layout);
       mini.position = screenToWorld(anchor.x, anchor.y, mini.depth);
       mini.aperture = {
         x: anchor.x,
         y: anchor.y,
-        width: apertureWidth,
-        height: apertureHeight,
+        width: apertureSize,
+        height: apertureSize,
         cut: apertureCut
       };
       mini.apertureHitPoints = getBunkerAperturePoints(mini.aperture, BUNKER_APERTURE_HIT_INSET);
