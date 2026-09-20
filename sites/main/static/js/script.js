@@ -43,7 +43,7 @@
   const FONT_STACK = '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace';
 
   const navItems = [
-    { label: 'ABOUT',    href: '#about' },
+    { label: 'ABOUT',    href: 'https://about.cubus.sh' },
     { label: '???',      href: '#undefined' },
     { label: '???',      href: '#undefined' },
     { label: '???',      href: '#undefined' },
@@ -62,6 +62,18 @@
   const randomBetween = (min, max) => min + Math.random() * (max - min);
   const randomSigned = (min, max) => randomBetween(min, max) * (Math.random() < .5 ? -1 : 1);
 
+  function isExternalHttpLink(href) {
+    if (typeof href !== 'string' || !href.trim()) return false;
+    try {
+      const pageUrl = new URL(window.location.href);
+      const targetUrl = new URL(href, pageUrl);
+      return (targetUrl.protocol === 'http:' || targetUrl.protocol === 'https:') &&
+        targetUrl.origin !== pageUrl.origin;
+    } catch {
+      return false;
+    }
+  }
+
   const vec = (x = 0, y = 0, z = 0) => ({ x, y, z });
   const CAMERA_POSITION = vec(0, 0, CAMERA_Z);
 
@@ -72,6 +84,7 @@
       isOpened: false,
       isOpening: false,
       openingStartedAt: 0,
+      accessResult: null,
       keypadSequence: [],
       wallPulseUntil: 0
     }))
@@ -79,12 +92,22 @@
 
   const BULKHEAD_TIMING = {
     keypadDuration: 500,
+    grantedDisplayDuration: 100,
     unlockDuration: 400,
-    slideDuration: 800
+    slideDuration: 800,
+    deniedDisplayDuration: 300,
+    deniedWarningDuration: 400,
+    deniedResetDuration: 1500
   };
+  const BULKHEAD_GRANTED_SLIDE_START = BULKHEAD_TIMING.keypadDuration +
+    BULKHEAD_TIMING.grantedDisplayDuration + BULKHEAD_TIMING.unlockDuration;
   const BULKHEAD_TOTAL_DURATION = BULKHEAD_TIMING.keypadDuration +
+    BULKHEAD_TIMING.grantedDisplayDuration +
     BULKHEAD_TIMING.unlockDuration +
     BULKHEAD_TIMING.slideDuration;
+  const BULKHEAD_DENIED_WARNING_START = BULKHEAD_TIMING.keypadDuration +
+    BULKHEAD_TIMING.deniedDisplayDuration;
+  const NO_BULKHEAD_FEEDBACK = Object.freeze({ tone: '', rgb: '', color: '', intensity: 0 });
   const BUNKER_APERTURE_HIT_INSET = -3;
   const BUNKER_APERTURE_FX_PADDING = -3;
   const KEYPAD_KEY_COUNT = 20;
@@ -697,6 +720,13 @@
       keyHeight
     } = layout;
     const enteredCount = getKeypadEnteredCount(state, time);
+    const elapsed = state?.isOpening ? time - state.openingStartedAt : -1;
+    const displayResult = elapsed >= BULKHEAD_TIMING.keypadDuration ? state.accessResult : null;
+    const displayTone = displayResult === 'granted'
+      ? { rgb: '0, 255, 0', color: '#00ff00' }
+      : displayResult === 'denied'
+        ? { rgb: '255, 0, 0', color: '#ff0000' }
+        : null;
 
     target.save();
     drawBunkerAperturePath(target, aperture);
@@ -711,11 +741,24 @@
     target.fillRect(keypadLeft, keypadTop, keypadWidth, keypadHeight);
     target.strokeRect(keypadLeft, keypadTop, keypadWidth, keypadHeight);
 
-    target.fillStyle = 'rgba(3, 10, 13, .96)';
-    target.strokeStyle = 'rgba(118, 177, 180, .72)';
+    target.fillStyle = displayResult === 'granted'
+      ? 'rgba(0, 150, 28, .94)'
+      : displayResult === 'denied'
+        ? 'rgba(150, 0, 0, .94)'
+        : 'rgba(3, 10, 13, .96)';
+    target.strokeStyle = displayResult === 'granted'
+      ? 'rgba(148, 255, 158, .98)'
+      : displayResult === 'denied'
+        ? 'rgba(255, 150, 150, .98)'
+        : 'rgba(118, 177, 180, .72)';
+    target.shadowColor = displayTone ? `rgba(${displayTone.rgb}, .95)` : 'transparent';
+    target.shadowBlur = displayTone ? 10 : 0;
     target.fillRect(displayLeft, displayTop, displayWidth, displayHeight);
     target.strokeRect(displayLeft, displayTop, displayWidth, displayHeight);
-    target.strokeStyle = 'rgba(0, 240, 255, .48)';
+    target.shadowBlur = 0;
+    target.strokeStyle = displayTone
+      ? `rgba(${displayTone.rgb}, .86)`
+      : 'rgba(0, 240, 255, .48)';
     target.beginPath();
     target.moveTo(displayLeft + 1, displayTop + 1);
     target.lineTo(displayLeft + displayWidth - 1, displayTop + 1);
@@ -726,14 +769,36 @@
       target.font = `${displayFontSize}px ${FONT_STACK}`;
       target.textAlign = 'center';
       target.textBaseline = 'middle';
-      target.fillStyle = '#00ff00';
-      target.shadowColor = 'rgba(0, 255, 0, .92)';
-      target.shadowBlur = 5;
+      target.fillStyle = displayTone ? displayTone.color : '#00ff00';
+      target.shadowColor = displayTone ? `rgba(${displayTone.rgb}, .98)` : 'rgba(0, 255, 0, .92)';
+      target.shadowBlur = displayTone ? 8 : 5;
       target.fillText('*'.repeat(enteredCount), deviceCenterX, displayTop + displayHeight * .54);
       target.shadowBlur = 0;
     }
+    if (displayResult === 'denied' && enteredCount > 0) {
+      const strikeProgress = clamp(
+        (elapsed - BULKHEAD_TIMING.keypadDuration) / BULKHEAD_TIMING.deniedDisplayDuration,
+        0,
+        1
+      );
+      const strikeLeft = displayLeft + 4;
+      const strikeRight = strikeLeft + (displayWidth - 8) * strikeProgress;
+      const strikeY = displayTop + displayHeight * .54;
+      target.beginPath();
+      target.moveTo(strikeLeft, strikeY);
+      target.lineTo(strikeRight, strikeY);
+      target.strokeStyle = '#ff0000';
+      target.lineWidth = 2.5;
+      target.lineCap = 'round';
+      target.shadowColor = 'rgba(255, 0, 0, .98)';
+      target.shadowBlur = 9;
+      target.stroke();
+      target.shadowBlur = 0;
+    }
     const scanX = displayLeft + ((time * .0011) % 1) * displayWidth;
-    target.strokeStyle = 'rgba(0, 240, 255, .62)';
+    target.strokeStyle = displayTone
+      ? `rgba(${displayTone.rgb}, .88)`
+      : 'rgba(0, 240, 255, .62)';
     target.lineWidth = 1;
     target.beginPath();
     target.moveTo(scanX, displayTop + 1);
@@ -763,7 +828,8 @@
     target.restore();
   }
 
-  function drawShutterSlit(target, aperture, offsetY, unlockGlow) {
+  function drawShutterSlit(target, aperture, offsetY, feedback) {
+    const intensity = feedback.intensity;
     target.save();
     drawBunkerAperturePath(target, aperture);
     target.clip();
@@ -772,10 +838,10 @@
     drawShutterSlitPath(target, aperture);
     target.fill();
     target.globalCompositeOperation = 'source-over';
-    if (unlockGlow > 0) {
-      target.fillStyle = `rgba(0, 255, 0, ${.14 + unlockGlow * .28})`;
-      target.shadowColor = 'rgba(0, 255, 0, .92)';
-      target.shadowBlur = 12 + unlockGlow * 14;
+    if (intensity > 0) {
+      target.fillStyle = `rgba(${feedback.rgb}, ${.14 + intensity * .28})`;
+      target.shadowColor = `rgba(${feedback.rgb}, .96)`;
+      target.shadowBlur = 12 + intensity * 14;
       drawShutterSlitPath(target, aperture);
       target.fill();
       target.shadowBlur = 0;
@@ -784,12 +850,12 @@
     target.strokeStyle = 'rgba(4, 9, 12, .96)';
     target.lineWidth = 4;
     target.stroke();
-    target.strokeStyle = unlockGlow > 0
-      ? 'rgba(0, 255, 0, .96)'
+    target.strokeStyle = intensity > 0
+      ? `rgba(${feedback.rgb}, .98)`
       : 'rgba(0, 240, 255, .42)';
-    target.lineWidth = unlockGlow > 0 ? 1.5 : 1;
-    target.shadowColor = unlockGlow > 0 ? 'rgba(0, 255, 0, .95)' : 'rgba(0, 240, 255, .42)';
-    target.shadowBlur = unlockGlow > 0 ? 12 : 6;
+    target.lineWidth = intensity > 0 ? 1.5 : 1;
+    target.shadowColor = intensity > 0 ? `rgba(${feedback.rgb}, .98)` : 'rgba(0, 240, 255, .42)';
+    target.shadowBlur = intensity > 0 ? 12 + intensity * 6 : 6;
     target.stroke();
     target.restore();
   }
@@ -816,7 +882,7 @@
     target.restore();
   }
 
-  function drawApertureShutters(target, aperture, bayIndex, openingProgress = 0, unlockGlow = 0, time = 0) {
+  function drawApertureShutters(target, aperture, bayIndex, openingProgress = 0, feedback = NO_BULKHEAD_FEEDBACK, time = 0) {
     const mini = app.minis[bayIndex];
     const seam = mini.shutterSeam;
     const travel = (aperture.height + 26) * easeInOutCubic(openingProgress);
@@ -826,7 +892,7 @@
     drawShutterPanel(target, aperture, seam, bayIndex, true, topOffset);
     drawShutterPanel(target, aperture, seam, bayIndex, false, bottomOffset);
     drawShutterKeypad(target, aperture, bulkheadState.bays[bayIndex], bottomOffset, time, mini.keypadLayout);
-    drawShutterSlit(target, aperture, topOffset, unlockGlow);
+    drawShutterSlit(target, aperture, topOffset, feedback);
     drawShutterSeam(target, aperture, seam, topOffset);
     drawShutterSeam(target, aperture, seam, bottomOffset);
   }
@@ -835,20 +901,46 @@
     const state = bulkheadState.bays[bayIndex];
     if (!state) return 0;
     if (!state.isOpening) return state.isOpened ? 1 : 0;
+    if (state.accessResult !== 'granted') return 0;
     const elapsed = time - state.openingStartedAt;
     const slideElapsed = Math.max(
       0,
-      elapsed - BULKHEAD_TIMING.keypadDuration - BULKHEAD_TIMING.unlockDuration
+      elapsed - BULKHEAD_GRANTED_SLIDE_START
     );
     return clamp(slideElapsed / BULKHEAD_TIMING.slideDuration, 0, 1);
   }
 
-  function getBulkheadUnlockGlow(bayIndex, time) {
+  function getBulkheadFeedback(bayIndex, time) {
     const state = bulkheadState.bays[bayIndex];
-    if (!state || !state.isOpening) return 0;
-    const elapsed = time - state.openingStartedAt - BULKHEAD_TIMING.keypadDuration;
-    if (elapsed < 0 || elapsed >= BULKHEAD_TIMING.unlockDuration) return 0;
-    return Math.pow(Math.abs(Math.sin(elapsed / BULKHEAD_TIMING.unlockDuration * Math.PI * 3)), 8);
+    if (!state || !state.isOpening) return NO_BULKHEAD_FEEDBACK;
+    const elapsed = time - state.openingStartedAt;
+
+    if (state.accessResult === 'granted') {
+      const flashElapsed = elapsed - BULKHEAD_TIMING.keypadDuration - BULKHEAD_TIMING.grantedDisplayDuration;
+      if (flashElapsed < 0 || flashElapsed >= BULKHEAD_TIMING.unlockDuration) return NO_BULKHEAD_FEEDBACK;
+      return {
+        tone: 'granted',
+        rgb: '0, 255, 0',
+        color: '#00ff00',
+        intensity: Math.pow(Math.abs(Math.sin(flashElapsed / BULKHEAD_TIMING.unlockDuration * Math.PI * 3)), 8)
+      };
+    }
+
+    if (state.accessResult === 'denied') {
+      const warningElapsed = elapsed - BULKHEAD_DENIED_WARNING_START;
+      if (warningElapsed < 0 || elapsed >= BULKHEAD_TIMING.deniedResetDuration) return NO_BULKHEAD_FEEDBACK;
+      const intensity = warningElapsed < BULKHEAD_TIMING.deniedWarningDuration
+        ? .12 + .88 * Math.pow(Math.abs(Math.sin(warningElapsed / BULKHEAD_TIMING.deniedWarningDuration * Math.PI * 3)), 8)
+        : .62;
+      return {
+        tone: 'denied',
+        rgb: '255, 0, 0',
+        color: '#ff0000',
+        intensity
+      };
+    }
+
+    return NO_BULKHEAD_FEEDBACK;
   }
 
   function drawBunkerWall(time = performance.now()) {
@@ -888,7 +980,7 @@
           aperture,
           mini.index,
           getBulkheadOpeningProgress(mini.index, time),
-          getBulkheadUnlockGlow(mini.index, time),
+          getBulkheadFeedback(mini.index, time),
           time
         );
       }
@@ -912,11 +1004,16 @@
     }
   }
 
+  function hasPersistentApertureFx(state) {
+    return state.isOpened || (state.isOpening && state.accessResult === 'granted');
+  }
+
   function drawBunkerLedFx(time = performance.now()) {
     const target = bunkerFxCtx;
     const hasFx = bulkheadState.bays.some((bayState, index) => {
-      const persistent = bayState.isOpened || bayState.isOpening;
-      const pulseActive = !persistent && index === app.wallHoveredIndex && time < bayState.wallPulseUntil;
+      const persistent = hasPersistentApertureFx(bayState);
+      const pulseActive = !persistent && !bayState.isOpening &&
+        index === app.wallHoveredIndex && time < bayState.wallPulseUntil;
       return persistent || pulseActive;
     });
     if (!hasFx) {
@@ -934,8 +1031,9 @@
 
     for (const mini of app.minis) {
       const bayState = bulkheadState.bays[mini.index];
-      const persistent = bayState.isOpened || bayState.isOpening;
-      const pulseActive = !persistent && mini.index === app.wallHoveredIndex && time < bayState.wallPulseUntil;
+      const persistent = hasPersistentApertureFx(bayState);
+      const pulseActive = !persistent && !bayState.isOpening &&
+        mini.index === app.wallHoveredIndex && time < bayState.wallPulseUntil;
       if (!persistent && !pulseActive) continue;
       const aperture = mini.aperture;
       const fxGeometry = mini.apertureFxGeometry;
@@ -1316,6 +1414,7 @@
   function drawFaceTexture(cube, face, options, facing, rotation) {
     const visibility = clamp(.38 + facing * .62, .12, 1);
     const alpha = clamp((options.textureAlpha ?? 1) * visibility, 0, 1);
+    const textureColor = options.textureColor || VECTOR_COLOR;
     const geometry = face.textureGeometry;
     const projected = geometry.projected;
     for (let i = 0; i < geometry.points.length; i += 1) {
@@ -1323,11 +1422,11 @@
     }
 
     ctx.globalAlpha = alpha;
-    ctx.strokeStyle = VECTOR_COLOR;
+    ctx.strokeStyle = textureColor;
     ctx.lineWidth = Math.max(.72, cube.half * 2.15);
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    ctx.shadowColor = VECTOR_COLOR;
+    ctx.shadowColor = textureColor;
     ctx.shadowBlur = 0;
     ctx.beginPath();
     for (const [from, to] of geometry.segments) {
@@ -1363,6 +1462,7 @@
       offsetY: 0,
       wireOnly: false,
       textureAlpha: 1,
+      textureColor: VECTOR_COLOR,
       edgeColor: EDGE_COLOR,
       edgeAlpha: 1,
       edgeGlow: 1,
@@ -1692,6 +1792,7 @@
     state.isOpened = nextState;
     state.isOpening = false;
     state.openingStartedAt = 0;
+    state.accessResult = null;
     state.keypadSequence = [];
     state.wallPulseUntil = 0;
     resetHoverState();
@@ -1706,6 +1807,7 @@
     if (state.isOpened || state.isOpening) return false;
     state.isOpening = true;
     state.openingStartedAt = time;
+    state.accessResult = isExternalHttpLink(app.minis[bayIndex].href) ? 'granted' : 'denied';
     state.keypadSequence = createKeypadSequence();
     state.wallPulseUntil = 0;
     resetHoverState();
@@ -1721,9 +1823,17 @@
       hasOpening = true;
       const elapsed = time - state.openingStartedAt;
       updateKeypadAudio(state, elapsed);
-      if (elapsed >= BULKHEAD_TOTAL_DURATION) {
+      if (state.accessResult === 'granted' && elapsed >= BULKHEAD_TOTAL_DURATION) {
         state.isOpening = false;
         state.isOpened = true;
+        state.accessResult = null;
+        state.openingStartedAt = 0;
+        state.keypadSequence = [];
+        state.wallPulseUntil = 0;
+      } else if (state.accessResult === 'denied' && elapsed >= BULKHEAD_TIMING.deniedResetDuration) {
+        state.isOpening = false;
+        state.accessResult = null;
+        state.openingStartedAt = 0;
         state.keypadSequence = [];
         state.wallPulseUntil = 0;
       }
@@ -1947,8 +2057,8 @@
   function renderMini(mini, time, frameSeed) {
     const bayState = bulkheadState.bays[mini.index];
     const hovered = bayState.isOpened && !bayState.isOpening && mini.hovered;
-    const unlockGlow = getBulkheadUnlockGlow(mini.index, time);
-    const unlockHighlight = unlockGlow > .02;
+    const feedback = getBulkheadFeedback(mini.index, time);
+    const unlockHighlight = feedback.intensity > .02;
     const glitchActive = glitch.active;
     const rotation = createRotationCache(mini.rotation);
     if (glitchActive) {
@@ -1974,10 +2084,12 @@
     mini.hit = renderCube(mini, {
       vertexJitter: glitchActive ? .06 * glitch.intensity : 0,
       seed: frameSeed + mini.index,
-      edgeAlpha: unlockHighlight ? 1.18 + unlockGlow * .22 : hovered ? 1.35 : .92,
-      edgeColor: unlockHighlight ? '#00ff00' : hovered ? '#ffffff' : EDGE_COLOR,
-      fillAlpha: unlockHighlight ? 1.02 + unlockGlow * .14 : hovered ? 1.16 : .88,
-      textureAlpha: unlockHighlight ? 1.02 + unlockGlow * .16 : hovered ? 1.18 : .82
+      edgeAlpha: unlockHighlight ? 1.18 + feedback.intensity * .22 : hovered ? 1.35 : .92,
+      edgeColor: unlockHighlight ? feedback.color : hovered ? '#ffffff' : EDGE_COLOR,
+      faceOutlineColor: unlockHighlight ? feedback.color : VECTOR_COLOR,
+      textureColor: unlockHighlight ? feedback.color : VECTOR_COLOR,
+      fillAlpha: unlockHighlight ? 1.02 + feedback.intensity * .14 : hovered ? 1.16 : .88,
+      textureAlpha: unlockHighlight ? 1.02 + feedback.intensity * .16 : hovered ? 1.18 : .82
     }, rotation);
   }
 
@@ -2000,6 +2112,9 @@
     app.lastTime = time;
 
     updateBulkheadOpening(time);
+    if (bunkerFxVisible || bulkheadState.bays.some(hasPersistentApertureFx)) {
+      drawBunkerLedFx(time);
+    }
     updateMinis(dt, time);
     render(time);
     requestAnimationFrame(frame);
