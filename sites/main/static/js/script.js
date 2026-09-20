@@ -9,6 +9,8 @@
   const bunkerFxCtx = bunkerFxCanvas.getContext('2d');
   const bunkerWallCacheCanvas = document.createElement('canvas');
   const bunkerWallCacheCtx = bunkerWallCacheCanvas.getContext('2d');
+  const bunkerWallRestingCacheCanvas = document.createElement('canvas');
+  const bunkerWallRestingCacheCtx = bunkerWallRestingCacheCanvas.getContext('2d');
   const bunkerWallTextureCanvas = document.createElement('canvas');
   const bunkerWallTextureCtx = bunkerWallTextureCanvas.getContext('2d');
   const bunkerHazardCanvas = document.createElement('canvas');
@@ -110,6 +112,14 @@
   const BULKHEAD_DENIED_WARNING_START = BULKHEAD_TIMING.keypadDuration +
     BULKHEAD_TIMING.deniedDisplayDuration;
   const NO_BULKHEAD_FEEDBACK = Object.freeze({ tone: '', rgb: '', color: '', intensity: 0 });
+  const CLOSED_BULKHEAD_STATE = Object.freeze({
+    isOpened: false,
+    isOpening: false,
+    openingStartedAt: 0,
+    accessResult: null,
+    keypadSequence: Object.freeze([]),
+    wallPulseUntil: 0
+  });
   const BUNKER_APERTURE_HIT_INSET = -3;
   const BUNKER_APERTURE_FX_PADDING = -3;
   const BUNKER_APERTURE_FRAME_PADDING_MAX = 18;
@@ -256,10 +266,14 @@
 
   buildBunkerWallTextureTile();
 
+  const coarsePointerQuery = window.matchMedia('(pointer: coarse)');
+  const hoverPointerQuery = window.matchMedia('(hover: hover) and (pointer: fine)');
+  const getRenderDpr = () => Math.min(window.devicePixelRatio || 1, coarsePointerQuery.matches ? 1.5 : 2);
+
   const viewport = {
     width: window.innerWidth,
     height: window.innerHeight,
-    dpr: Math.min(window.devicePixelRatio || 1, 2),
+    dpr: getRenderDpr(),
     centerX: window.innerWidth / 2,
     centerY: window.innerHeight / 2,
     scale: Math.min(window.innerWidth, window.innerHeight) * .30,
@@ -328,17 +342,32 @@
   }
 
   function resizeCanvas() {
-    viewport.width = window.innerWidth;
-    viewport.height = window.innerHeight;
-    viewport.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const dpr = getRenderDpr();
+    const pixelWidth = Math.round(width * dpr);
+    const pixelHeight = Math.round(height * dpr);
+    if (
+      canvas.width === pixelWidth &&
+      canvas.height === pixelHeight &&
+      viewport.width === width &&
+      viewport.height === height &&
+      viewport.dpr === dpr &&
+      backgroundCache.canvas &&
+      bunkerWallCacheReady
+    ) return;
+
+    viewport.width = width;
+    viewport.height = height;
+    viewport.dpr = dpr;
     viewport.centerX = viewport.width / 2;
     viewport.centerY = viewport.height / 2;
     viewport.scale = Math.min(viewport.width, viewport.height) * .30;
     viewport.labelUnit = clamp(Math.min(viewport.width, viewport.height) / 600, .62, 1.18);
     viewport.labelSize = clamp(11 * viewport.labelUnit, 8, 13);
     viewport.urlSize = clamp(8 * viewport.labelUnit, 7, 10);
-    canvas.width = Math.round(viewport.width * viewport.dpr);
-    canvas.height = Math.round(viewport.height * viewport.dpr);
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
     canvas.style.width = `${viewport.width}px`;
     canvas.style.height = `${viewport.height}px`;
     ctx.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
@@ -1025,7 +1054,15 @@
     target.restore();
   }
 
-  function drawApertureShutters(target, aperture, bayIndex, openingProgress = 0, feedback = NO_BULKHEAD_FEEDBACK, time = 0) {
+  function drawApertureShutters(
+    target,
+    aperture,
+    bayIndex,
+    openingProgress = 0,
+    feedback = NO_BULKHEAD_FEEDBACK,
+    time = 0,
+    state = bulkheadState.bays[bayIndex]
+  ) {
     const mini = app.minis[bayIndex];
     const seam = mini.shutterSeam;
     const travel = (aperture.height + 26) * easeInOutCubic(openingProgress);
@@ -1034,7 +1071,7 @@
 
     drawShutterPanel(target, aperture, seam, bayIndex, true, topOffset);
     drawShutterPanel(target, aperture, seam, bayIndex, false, bottomOffset);
-    drawShutterKeypad(target, aperture, bulkheadState.bays[bayIndex], bottomOffset, time, mini.keypadLayout);
+    drawShutterKeypad(target, aperture, state, bottomOffset, time, mini.keypadLayout);
     drawShutterSlit(target, aperture, topOffset, feedback);
     drawShutterSeam(target, aperture, seam, topOffset);
     drawShutterSeam(target, aperture, seam, bottomOffset);
@@ -1086,65 +1123,130 @@
     return NO_BULKHEAD_FEEDBACK;
   }
 
-  function drawBunkerWall(time = performance.now()) {
-    if (!bunkerWallCacheReady) return;
+  function drawBunkerBay(target, mini, bayState, time, active = false) {
+    const aperture = mini.aperture;
+    target.save();
+    drawBunkerAperturePath(target, aperture, getApertureFramePadding(aperture.width));
+    target.fillStyle = active ? 'rgba(9, 24, 28, .98)' : 'rgba(13, 18, 22, .98)';
+    target.strokeStyle = active ? 'rgba(167, 224, 218, .92)' : 'rgba(131, 143, 142, .7)';
+    target.lineWidth = active ? 2.4 : 1.5;
+    target.shadowColor = active ? 'rgba(0, 240, 255, .78)' : 'rgba(0, 0, 0, .22)';
+    target.shadowBlur = active ? 16 : 3;
+    target.fill();
+    target.stroke();
+    target.restore();
+
+    target.save();
+    target.globalCompositeOperation = 'destination-out';
+    drawBunkerAperturePath(target, aperture);
+    target.fill();
+    target.restore();
+
+    if (!bayState.isOpened) {
+      const resting = bayState === CLOSED_BULKHEAD_STATE;
+      drawApertureShutters(
+        target,
+        aperture,
+        mini.index,
+        resting ? 0 : getBulkheadOpeningProgress(mini.index, time),
+        resting ? NO_BULKHEAD_FEEDBACK : getBulkheadFeedback(mini.index, time),
+        time,
+        bayState
+      );
+    }
+
+    target.save();
+    drawBunkerAperturePath(target, aperture);
+    target.strokeStyle = 'rgba(2, 7, 10, .92)';
+    target.lineWidth = 5;
+    target.stroke();
+    drawBunkerAperturePath(target, aperture, -4);
+    target.strokeStyle = active ? 'rgba(0, 240, 255, .98)' : 'rgba(0, 240, 255, .46)';
+    target.lineWidth = active ? 2.2 : 1;
+    target.shadowColor = active ? 'rgba(0, 240, 255, .9)' : 'rgba(0, 240, 255, .28)';
+    target.shadowBlur = active ? 14 : 4;
+    target.stroke();
+    target.strokeStyle = active ? 'rgba(198, 44, 255, .8)' : 'rgba(198, 44, 255, .28)';
+    target.lineWidth = active ? 1.2 : .7;
+    drawBunkerAperturePath(target, aperture, 7);
+    target.stroke();
+    target.restore();
+  }
+
+  function getBunkerBayRenderBounds(aperture) {
+    const outer = getApertureOuterBounds(aperture);
+    const effectPadding = 18;
+    const left = Math.max(0, Math.floor(outer.left - effectPadding));
+    const top = Math.max(0, Math.floor(outer.top - effectPadding));
+    const right = Math.min(viewport.width, Math.ceil(outer.left + outer.width + effectPadding));
+    const bottom = Math.min(viewport.height, Math.ceil(outer.top + outer.height + effectPadding));
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
+  }
+
+  function boundsIntersect(a, b) {
+    return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  }
+
+  function rebuildBunkerWallRestingCache(time = performance.now()) {
+    const target = bunkerWallRestingCacheCtx;
     const width = viewport.width;
     const height = viewport.height;
-    const target = bunkerWallCtx;
     target.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
     target.clearRect(0, 0, width, height);
     target.globalCompositeOperation = 'source-over';
     target.drawImage(bunkerWallCacheCanvas, 0, 0, width, height);
-
     for (const mini of app.minis) {
-      const bayState = bulkheadState.bays[mini.index];
-      const aperture = mini.aperture;
-      const active = app.wallHoveredIndex === mini.index && !bayState.isOpened && !bayState.isOpening;
-      target.save();
-      drawBunkerAperturePath(target, aperture, getApertureFramePadding(aperture.width));
-      target.fillStyle = active ? 'rgba(9, 24, 28, .98)' : 'rgba(13, 18, 22, .98)';
-      target.strokeStyle = active ? 'rgba(167, 224, 218, .92)' : 'rgba(131, 143, 142, .7)';
-      target.lineWidth = active ? 2.4 : 1.5;
-      target.shadowColor = active ? 'rgba(0, 240, 255, .78)' : 'rgba(0, 0, 0, .22)';
-      target.shadowBlur = active ? 16 : 3;
-      target.fill();
-      target.stroke();
-      target.restore();
-
-      target.save();
-      target.globalCompositeOperation = 'destination-out';
-      drawBunkerAperturePath(target, aperture);
-      target.fill();
-      target.restore();
-
-      if (!bayState.isOpened) {
-        drawApertureShutters(
-          target,
-          aperture,
-          mini.index,
-          getBulkheadOpeningProgress(mini.index, time),
-          getBulkheadFeedback(mini.index, time),
-          time
-        );
-      }
-
-      target.save();
-      drawBunkerAperturePath(target, aperture);
-      target.strokeStyle = 'rgba(2, 7, 10, .92)';
-      target.lineWidth = 5;
-      target.stroke();
-      drawBunkerAperturePath(target, aperture, -4);
-      target.strokeStyle = active ? 'rgba(0, 240, 255, .98)' : 'rgba(0, 240, 255, .46)';
-      target.lineWidth = active ? 2.2 : 1;
-      target.shadowColor = active ? 'rgba(0, 240, 255, .9)' : 'rgba(0, 240, 255, .28)';
-      target.shadowBlur = active ? 14 : 4;
-      target.stroke();
-      target.strokeStyle = active ? 'rgba(198, 44, 255, .8)' : 'rgba(198, 44, 255, .28)';
-      target.lineWidth = active ? 1.2 : .7;
-      drawBunkerAperturePath(target, aperture, 7);
-      target.stroke();
-      target.restore();
+      drawBunkerBay(target, mini, CLOSED_BULKHEAD_STATE, time, false);
     }
+  }
+
+  function drawBunkerWall(time = performance.now()) {
+    if (!bunkerWallCacheReady) return;
+    const width = viewport.width;
+    const height = viewport.height;
+    const dpr = viewport.dpr;
+    const target = bunkerWallCtx;
+    target.setTransform(dpr, 0, 0, dpr, 0, 0);
+    target.globalCompositeOperation = 'copy';
+    target.drawImage(bunkerWallRestingCacheCanvas, 0, 0, width, height);
+    target.globalCompositeOperation = 'source-over';
+
+    const changedMinis = app.minis.filter((mini) => {
+      const bayState = bulkheadState.bays[mini.index];
+      const active = app.wallHoveredIndex === mini.index && !bayState.isOpened && !bayState.isOpening;
+      return active || bayState.isOpened || bayState.isOpening;
+    });
+    if (!changedMinis.length) return;
+
+    const changedBounds = changedMinis.map((mini) => mini.bunkerRenderBounds);
+    for (const bounds of changedBounds) {
+      target.drawImage(
+        bunkerWallCacheCanvas,
+        bounds.left * dpr,
+        bounds.top * dpr,
+        bounds.width * dpr,
+        bounds.height * dpr,
+        bounds.left,
+        bounds.top,
+        bounds.width,
+        bounds.height
+      );
+    }
+
+    target.save();
+    target.beginPath();
+    for (const bounds of changedBounds) {
+      target.rect(bounds.left, bounds.top, bounds.width, bounds.height);
+    }
+    target.clip();
+    for (const mini of app.minis) {
+      const renderBounds = mini.bunkerRenderBounds;
+      if (!changedBounds.some((bounds) => boundsIntersect(bounds, renderBounds))) continue;
+      const bayState = bulkheadState.bays[mini.index];
+      const active = app.wallHoveredIndex === mini.index && !bayState.isOpened && !bayState.isOpening;
+      drawBunkerBay(target, mini, bayState, time, active);
+    }
+    target.restore();
   }
 
   function hasPersistentApertureFx(state) {
@@ -1240,11 +1342,15 @@
     bunkerWallCanvas.style.height = `${height}px`;
     bunkerWallCacheCanvas.width = Math.round(width * dpr);
     bunkerWallCacheCanvas.height = Math.round(height * dpr);
+    bunkerWallRestingCacheCanvas.width = Math.round(width * dpr);
+    bunkerWallRestingCacheCanvas.height = Math.round(height * dpr);
     bunkerWallCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     bunkerWallCacheCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    bunkerWallRestingCacheCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     bunkerWallCacheReady = true;
     bunkerWallCacheCtx.clearRect(0, 0, width, height);
     drawBunkerWallSurface(bunkerWallCacheCtx);
+    rebuildBunkerWallRestingCache();
     drawBunkerWall();
     resizeBunkerFx();
   }
@@ -1762,19 +1868,19 @@
   }
 
   function playRandomGlitchSound() {
-    const clips = preloadStaticGlitchAudio();
-    if (!staticGlitchAudio.unlocked || clips.length !== STATIC_GLITCH_SOURCES.length) {
+    if (!staticGlitchAudio.unlocked) {
       if (!staticGlitchAudio.warnedAboutAutoplay) {
         console.warn('[CUBUS AUDIO] Static glitch playback is waiting for a user interaction.');
         staticGlitchAudio.warnedAboutAutoplay = true;
       }
       return false;
     }
+    const clips = preloadStaticGlitchAudio();
+    if (clips.length !== STATIC_GLITCH_SOURCES.length) return false;
 
     const index = chooseStaticGlitchIndex();
-      const clip = clips[index];
+    const clip = clips[index];
     try {
-
       clip.pause();
       clip.currentTime = 0;
       const playback = clip.play();
@@ -1918,6 +2024,8 @@
     pointer: { x: -9999, y: -9999 },
     minis: [],
     lastTime: performance.now(),
+    lastFrameAt: 0,
+    frameRequest: 0
   };
 
   function resetHoverState() {
@@ -2012,6 +2120,7 @@
       aperture: null,
       apertureHitPoints: null,
       apertureFxGeometry: null,
+      bunkerRenderBounds: null,
       shutterSeam: null,
       keypadLayout: null,
       shutterGradients: { top: null, bottom: null },
@@ -2065,6 +2174,7 @@
       };
       mini.apertureHitPoints = getBunkerAperturePoints(mini.aperture, BUNKER_APERTURE_HIT_INSET);
       mini.apertureFxGeometry = createApertureFxGeometry(mini.aperture);
+      mini.bunkerRenderBounds = getBunkerBayRenderBounds(mini.aperture);
       mini.shutterSeam = getShutterSeamPoints(mini.aperture);
       mini.keypadLayout = getShutterKeypadLayout(mini.aperture);
       mini.shutterGradients = { top: null, bottom: null };
@@ -2172,7 +2282,6 @@
     if (wallChanged) canvas.classList.toggle('is-wall-hovered', nextWall >= 0);
     if (cubeChanged) canvas.classList.toggle('is-cube-hovered', nextCube >= 0);
     if (wallChanged) drawBunkerWall();
-    drawBunkerLedFx();
   }
 
   function drawCubeLabel(mini) {
@@ -2244,21 +2353,57 @@
     for (const mini of app.minis) drawCubeLabel(mini);
     ctx.restore();
 
-    updateHover();
+    if (app.pointerActive) updateHover();
   }
 
   function frame(time) {
+    app.frameRequest = 0;
+    if (coarsePointerQuery.matches && app.lastFrameAt) {
+      const frameElapsed = time - app.lastFrameAt;
+      if (frameElapsed < 16) {
+        scheduleAnimationFrame();
+        return;
+      }
+      app.lastFrameAt = time - (frameElapsed % 16);
+    } else {
+      app.lastFrameAt = time;
+    }
+
     const elapsed = Math.min(42, time - app.lastTime);
     const dt = elapsed / 1000;
     app.lastTime = time;
 
     updateBulkheadOpening(time);
-    if (bunkerFxVisible || bulkheadState.bays.some(hasPersistentApertureFx)) {
-      drawBunkerLedFx(time);
-    }
+    drawBunkerLedFx(time);
     updateMinis(dt, time);
     render(time);
-    requestAnimationFrame(frame);
+    scheduleAnimationFrame();
+  }
+
+  function scheduleAnimationFrame() {
+    if (!app.frameRequest && !document.hidden) {
+      app.frameRequest = requestAnimationFrame(frame);
+    }
+  }
+
+  let resizeRequest = 0;
+  function scheduleResize() {
+    if (resizeRequest) return;
+    resizeRequest = requestAnimationFrame(() => {
+      resizeRequest = 0;
+      resizeCanvas();
+    });
+  }
+
+  function handleVisibilityChange() {
+    if (document.hidden) {
+      if (app.frameRequest) cancelAnimationFrame(app.frameRequest);
+      app.frameRequest = 0;
+      return;
+    }
+    app.lastTime = performance.now();
+    app.lastFrameAt = 0;
+    scheduleAnimationFrame();
   }
 
   function pointerPosition(event) {
@@ -2279,6 +2424,7 @@
   window.addEventListener('keydown', unlockAllAudio, { capture: true });
 
   canvas.addEventListener('pointermove', (event) => {
+    if (!hoverPointerQuery.matches || event.pointerType === 'touch') return;
     app.pointerActive = true;
     app.pointer = pointerPosition(event);
     updateHover();
@@ -2297,14 +2443,15 @@
   });
 
   canvas.addEventListener('pointerdown', (event) => {
-    app.pointerActive = true;
-    app.pointer = pointerPosition(event);
-    const wallHit = hitTestWall(app.pointer);
+    const point = pointerPosition(event);
+    app.pointerActive = hoverPointerQuery.matches && event.pointerType !== 'touch';
+    if (app.pointerActive) app.pointer = point;
+    const wallHit = hitTestWall(point);
     if (wallHit >= 0) {
       beginBulkheadOpening(wallHit, performance.now());
       return;
     }
-    const hit = hitTestCube(app.pointer);
+    const hit = hitTestCube(point);
     if (hit >= 0) {
       const destination = app.minis[hit].href;
       window.location.assign(destination);
@@ -2315,10 +2462,13 @@
     if (event.key === 'Escape') canvas.blur();
   });
 
-  window.addEventListener('resize', resizeCanvas, { passive: true });
+  window.addEventListener('resize', scheduleResize, { passive: true });
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+  if (typeof coarsePointerQuery.addEventListener === 'function') {
+    coarsePointerQuery.addEventListener('change', scheduleResize);
+  }
 
-  preloadStaticGlitchAudio();
   buildMinis();
   resizeCanvas();
-  requestAnimationFrame(frame);
+  scheduleAnimationFrame();
 })();
