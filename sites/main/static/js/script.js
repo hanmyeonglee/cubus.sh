@@ -2,7 +2,18 @@
   'use strict';
 
   const canvas = document.getElementById('scene');
-  const ctx = canvas.getContext('2d', { alpha: false });
+  const gl = canvas.getContext('webgl2', {
+    alpha: false,
+    antialias: true,
+    depth: false,
+    stencil: true,
+    powerPreference: 'high-performance',
+    preserveDrawingBuffer: false
+  });
+  if (!gl) {
+    canvas.dataset.renderer = 'unavailable';
+    throw new Error('[CUBUS RENDERER] WebGL2 is required.');
+  }
   const bunkerWallCanvas = document.getElementById('bunker-wall');
   const bunkerWallCtx = bunkerWallCanvas.getContext('2d');
   const bunkerFxCanvas = document.getElementById('bunker-fx');
@@ -306,10 +317,6 @@
     return { ...gridShape, pitchX, pitchY, apertureSize, outerWallMargin };
   }
 
-  const backgroundCache = {
-    canvas: null
-  };
-
   function rebuildStars() {
     viewport.stars = [];
     let seed = 911;
@@ -341,7 +348,6 @@
       viewport.width === width &&
       viewport.height === height &&
       viewport.dpr === dpr &&
-      backgroundCache.canvas &&
       bunkerWallCacheReady
     ) return;
 
@@ -358,13 +364,12 @@
     canvas.height = pixelHeight;
     canvas.style.width = `${viewport.width}px`;
     canvas.style.height = `${viewport.height}px`;
-    ctx.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
     rebuildStars();
-    rebuildBackgroundCache();
     if (app.minis.length) {
       updateGridTargets();
       resizeBunkerWall();
     }
+    if (gpuRenderer) gpuRenderer.resize();
   }
 
   function screenToWorld(x, y, z = 0) {
@@ -1544,114 +1549,6 @@
     resizeBunkerFx();
   }
 
-  function drawStaticBackground(target) {
-    const w = viewport.width;
-    const h = viewport.height;
-    target.fillStyle = '#05050e';
-    target.fillRect(0, 0, w, h);
-
-    const cyanGlow = target.createRadialGradient(
-      viewport.centerX - w * .22,
-      viewport.centerY - h * .2,
-      0,
-      viewport.centerX - w * .22,
-      viewport.centerY - h * .2,
-      Math.max(w, h) * .66
-    );
-    cyanGlow.addColorStop(0, 'rgba(0, 240, 255, .13)');
-    cyanGlow.addColorStop(.34, 'rgba(0, 143, 190, .05)');
-    cyanGlow.addColorStop(1, 'rgba(0, 20, 44, 0)');
-    target.fillStyle = cyanGlow;
-    target.fillRect(0, 0, w, h);
-
-    const purpleGlow = target.createRadialGradient(
-      viewport.centerX + w * .24,
-      viewport.centerY + h * .2,
-      0,
-      viewport.centerX + w * .24,
-      viewport.centerY + h * .2,
-      Math.max(w, h) * .7
-    );
-    purpleGlow.addColorStop(0, 'rgba(189, 0, 255, .12)');
-    purpleGlow.addColorStop(.38, 'rgba(121, 40, 202, .055)');
-    purpleGlow.addColorStop(1, 'rgba(20, 0, 40, 0)');
-    target.fillStyle = purpleGlow;
-    target.fillRect(0, 0, w, h);
-
-    const horizon = target.createLinearGradient(0, h * .33, 0, h);
-    horizon.addColorStop(0, 'rgba(0, 240, 255, 0)');
-    horizon.addColorStop(.54, 'rgba(121, 40, 202, .012)');
-    horizon.addColorStop(1, 'rgba(0, 240, 255, .028)');
-    target.fillStyle = horizon;
-    target.fillRect(0, 0, w, h);
-
-    target.save();
-    target.strokeStyle = 'rgba(0, 240, 255, .045)';
-    target.lineWidth = 1;
-    target.beginPath();
-    target.arc(viewport.centerX, viewport.centerY, Math.min(w, h) * .27, 0, TAU);
-    target.stroke();
-    target.strokeStyle = 'rgba(189, 0, 255, .035)';
-    target.beginPath();
-    target.arc(viewport.centerX, viewport.centerY, Math.min(w, h) * .36, 0, TAU);
-    target.stroke();
-    target.restore();
-  }
-
-  function rebuildBackgroundCache() {
-    const width = canvas.width;
-    const height = canvas.height;
-    if (!backgroundCache.canvas) backgroundCache.canvas = document.createElement('canvas');
-    backgroundCache.canvas.width = width;
-    backgroundCache.canvas.height = height;
-    const context = backgroundCache.canvas.getContext('2d', { alpha: false });
-    context.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
-    drawStaticBackground(context);
-  }
-
-  function drawBackground(time) {
-    const w = viewport.width;
-    const h = viewport.height;
-    const dpr = viewport.dpr;
-
-    ctx.save();
-    ctx.globalAlpha = 1;
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.filter = 'none';
-    if (app.minis.length) {
-      for (const mini of app.minis) {
-        const aperture = mini.aperture;
-        const left = aperture.x - aperture.width / 2;
-        const top = aperture.y - aperture.height / 2;
-        ctx.drawImage(
-          backgroundCache.canvas,
-          left * dpr,
-          top * dpr,
-          aperture.width * dpr,
-          aperture.height * dpr,
-          left,
-          top,
-          aperture.width,
-          aperture.height
-        );
-      }
-    } else {
-      ctx.drawImage(backgroundCache.canvas, 0, 0, w, h);
-    }
-    ctx.restore();
-
-    ctx.save();
-    for (const star of viewport.visibleStars) {
-      const shimmer = .74 + Math.sin(time * .00045 + star.phase) * .26;
-      ctx.globalAlpha = star.alpha * shimmer;
-      ctx.fillStyle = star.radius > 1 ? '#c0faff' : '#ffffff';
-      ctx.beginPath();
-      ctx.arc(star.x * w, star.y * h, star.radius, 0, TAU);
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-
   const cubeVertices = [
     vec(-1, -1, -1), vec(1, -1, -1), vec(1, 1, -1), vec(-1, 1, -1),
     vec(-1, -1, 1),  vec(1, -1, 1),  vec(1, 1, 1),  vec(-1, 1, 1)
@@ -1853,145 +1750,6 @@
     projected.y = viewport.centerY - worldY * viewport.scale * perspective + (options.offsetY || 0);
   }
 
-  function strokeProjectedPath(points, color, width, alpha = 1, glow = 0, closed = false) {
-    if (!points.length) return;
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.shadowColor = color;
-    ctx.shadowBlur = glow;
-    ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
-    if (closed) ctx.closePath();
-    ctx.stroke();
-  }
-
-  function drawFaceTexture(cube, face, options, facing, rotation) {
-    const visibility = clamp(.38 + facing * .62, .12, 1);
-    const alpha = clamp((options.textureAlpha ?? 1) * visibility, 0, 1);
-    const textureColor = options.textureColor || VECTOR_COLOR;
-    const geometry = face.textureGeometry;
-    const projected = geometry.projected;
-    for (let i = 0; i < geometry.points.length; i += 1) {
-      projectFaceTexturePoint(cube, geometry.points[i], options, rotation, projected[i]);
-    }
-
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = textureColor;
-    ctx.lineWidth = Math.max(.72, cube.half * 2.15);
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.shadowColor = textureColor;
-    ctx.shadowBlur = 0;
-    ctx.beginPath();
-    for (const [from, to] of geometry.segments) {
-      ctx.moveTo(projected[from].x, projected[from].y);
-      ctx.lineTo(projected[to].x, projected[to].y);
-    }
-    ctx.stroke();
-  }
-
-  function drawCubeEdges(cube, settings, projectedVertices) {
-    ctx.save();
-    ctx.globalAlpha = clamp(settings.edgeAlpha, 0, 1);
-    ctx.strokeStyle = settings.edgeColor;
-    ctx.lineWidth = Math.max(.8, cube.half * 1.35);
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.shadowColor = settings.edgeColor;
-    ctx.shadowBlur = (settings.edgeColor === EDGE_COLOR ? Math.max(5, cube.half * 5.2) : Math.max(3, cube.half * 3)) * settings.edgeGlow;
-    ctx.beginPath();
-    for (const [from, to] of cubeEdges) {
-      ctx.moveTo(projectedVertices[from].x, projectedVertices[from].y);
-      ctx.lineTo(projectedVertices[to].x, projectedVertices[to].y);
-    }
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  function renderCube(cube, options = {}, rotationCache = null) {
-    const settings = {
-      seed: 0,
-      vertexJitter: 0,
-      offsetX: 0,
-      offsetY: 0,
-      wireOnly: false,
-      textureAlpha: 1,
-      textureColor: VECTOR_COLOR,
-      edgeColor: EDGE_COLOR,
-      edgeAlpha: 1,
-      edgeGlow: 1,
-      faceOutlineColor: VECTOR_COLOR,
-      faceOutlineAlpha: .28,
-      faceOutlineScale: 1,
-      faceGlow: 0,
-      fillAlpha: 1,
-      ...options
-    };
-
-    const rotation = rotationCache || createRotationCache(cube.rotation);
-    const geometry = settings.wireOnly
-      ? wireRenderGeometry
-      : cube.renderGeometry || (cube.renderGeometry = createCubeRenderGeometry());
-    const worldVertices = transformedVertices(cube, settings, rotation, geometry.worldVertices);
-    const projectedVertices = projectVertices(worldVertices, settings, geometry.projectedVertices);
-
-    if (settings.wireOnly) {
-      drawCubeEdges(cube, settings, projectedVertices);
-      return null;
-    }
-
-    const projectedFaces = geometry.projectedFaces;
-    for (let index = 0; index < geometry.faceItems.length; index += 1) {
-      projectedFaces[index] = geometry.faceItems[index];
-    }
-    for (const item of projectedFaces) {
-      const face = item.face;
-      item.facing = getFaceFacing(cube, face.normal, rotation);
-      item.depth = face.vertices.reduce((sum, vertexIndex) => sum + worldVertices[vertexIndex].z, 0) /
-        face.vertices.length;
-    }
-
-    projectedFaces.sort((a, b) => a.depth - b.depth);
-
-    ctx.save();
-    ctx.fillStyle = FACE_COLOR;
-    for (const item of projectedFaces) {
-      const faceAlpha = settings.fillAlpha * clamp(.13 + Math.max(0, item.facing) * .22, .10, .36);
-      ctx.globalAlpha = faceAlpha;
-      ctx.beginPath();
-      ctx.moveTo(item.points[0].x, item.points[0].y);
-      for (let i = 1; i < item.points.length; i += 1) ctx.lineTo(item.points[i].x, item.points[i].y);
-      ctx.closePath();
-      ctx.fill();
-    }
-    ctx.restore();
-
-    ctx.save();
-    for (const item of projectedFaces) {
-      const localAlpha = settings.textureAlpha * clamp(.24 + Math.max(0, item.facing) * .76, .2, 1);
-      drawFaceTexture(cube, item.face, settings, item.facing, rotation);
-
-      strokeProjectedPath(
-        item.points,
-        settings.faceOutlineColor,
-        Math.max(.45, cube.half * .48) * settings.faceOutlineScale,
-        localAlpha * settings.faceOutlineAlpha,
-        settings.faceGlow,
-        true
-      );
-    }
-    ctx.restore();
-
-    drawCubeEdges(cube, settings, projectedVertices);
-
-    updateBounds(projectedVertices, geometry.bounds);
-    return geometry.hit;
-  }
-
   function updateBounds(points, bounds) {
     let left = Infinity;
     let right = -Infinity;
@@ -2008,6 +1766,738 @@
     bounds.top = top;
     bounds.bottom = bottom;
   }
+
+  function createWebGL2Renderer(gl) {
+    const GEOMETRY_STRIDE = 6;
+    const POINT_STRIDE = 7;
+    const TEXTURE_STRIDE = 4;
+    const colorCache = new Map();
+
+    const compileShader = (type, source) => {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        const message = gl.getShaderInfoLog(shader) || 'Unknown shader compilation error';
+        gl.deleteShader(shader);
+        throw new Error(message);
+      }
+      return shader;
+    };
+
+    const createProgram = (vertexSource, fragmentSource) => {
+      const program = gl.createProgram();
+      const vertexShader = compileShader(gl.VERTEX_SHADER, vertexSource);
+      const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentSource);
+      gl.attachShader(program, vertexShader);
+      gl.attachShader(program, fragmentShader);
+      gl.linkProgram(program);
+      gl.deleteShader(vertexShader);
+      gl.deleteShader(fragmentShader);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        const message = gl.getProgramInfoLog(program) || 'Unknown shader link error';
+        gl.deleteProgram(program);
+        throw new Error(message);
+      }
+      return program;
+    };
+
+    const positionVertexShader = `#version 300 es
+      layout(location = 0) in vec2 a_position;
+      uniform vec2 u_resolution;
+      void main() {
+        vec2 clip = a_position / u_resolution * 2.0 - 1.0;
+        gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+      }
+    `;
+    const backgroundFragmentShader = `#version 300 es
+      precision mediump float;
+      uniform vec2 u_pixelResolution;
+      out vec4 outColor;
+
+      float radialAlpha(float distanceRatio, float middle, float innerAlpha, float middleAlpha) {
+        float inner = mix(innerAlpha, middleAlpha, smoothstep(0.0, middle, distanceRatio));
+        return mix(inner, 0.0, smoothstep(middle, 1.0, distanceRatio));
+      }
+
+      void main() {
+        vec2 pixel = vec2(gl_FragCoord.x, u_pixelResolution.y - gl_FragCoord.y);
+        vec2 uv = pixel / u_pixelResolution;
+        float largestSide = max(u_pixelResolution.x, u_pixelResolution.y);
+        vec3 color = vec3(5.0, 5.0, 14.0) / 255.0;
+
+        float cyanDistance = length(pixel - u_pixelResolution * vec2(0.28, 0.30)) / (largestSide * 0.66);
+        float cyanAlpha = radialAlpha(cyanDistance, 0.34, 0.13, 0.05);
+        color = mix(color, vec3(0.0, 0.78, 0.92), cyanAlpha);
+
+        float purpleDistance = length(pixel - u_pixelResolution * vec2(0.74, 0.70)) / (largestSide * 0.70);
+        float purpleAlpha = radialAlpha(purpleDistance, 0.38, 0.12, 0.055);
+        color = mix(color, vec3(0.55, 0.08, 0.82), purpleAlpha);
+
+        float horizonProgress = clamp((uv.y - 0.33) / 0.67, 0.0, 1.0);
+        float horizonAlpha = horizonProgress < 0.54
+          ? mix(0.0, 0.012, horizonProgress / 0.54)
+          : mix(0.012, 0.028, (horizonProgress - 0.54) / 0.46);
+        vec3 horizonColor = horizonProgress < 0.54
+          ? vec3(0.47, 0.16, 0.79)
+          : vec3(0.0, 0.94, 1.0);
+        color = mix(color, horizonColor, horizonAlpha);
+
+        float centerDistance = length(pixel - u_pixelResolution * 0.5);
+        float ringWidth = max(1.0, largestSide / 1200.0);
+        float ringOne = 1.0 - smoothstep(ringWidth, ringWidth * 2.0,
+          abs(centerDistance - min(u_pixelResolution.x, u_pixelResolution.y) * 0.27));
+        float ringTwo = 1.0 - smoothstep(ringWidth, ringWidth * 2.0,
+          abs(centerDistance - min(u_pixelResolution.x, u_pixelResolution.y) * 0.36));
+        color = mix(color, vec3(0.0, 0.94, 1.0), ringOne * 0.045);
+        color = mix(color, vec3(0.74, 0.0, 1.0), ringTwo * 0.035);
+        outColor = vec4(color, 1.0);
+      }
+    `;
+    const geometryVertexShader = `#version 300 es
+      layout(location = 0) in vec2 a_position;
+      layout(location = 1) in vec4 a_color;
+      uniform vec2 u_resolution;
+      out vec4 v_color;
+      void main() {
+        vec2 clip = a_position / u_resolution * 2.0 - 1.0;
+        gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+        v_color = a_color;
+      }
+    `;
+    const geometryFragmentShader = `#version 300 es
+      precision mediump float;
+      in vec4 v_color;
+      out vec4 outColor;
+      void main() { outColor = v_color; }
+    `;
+    const pointVertexShader = `#version 300 es
+      layout(location = 0) in vec2 a_position;
+      layout(location = 1) in vec4 a_color;
+      layout(location = 2) in float a_size;
+      uniform vec2 u_resolution;
+      uniform float u_dpr;
+      out vec4 v_color;
+      void main() {
+        vec2 clip = a_position / u_resolution * 2.0 - 1.0;
+        gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+        gl_PointSize = max(1.0, a_size * u_dpr);
+        v_color = a_color;
+      }
+    `;
+    const pointFragmentShader = `#version 300 es
+      precision mediump float;
+      in vec4 v_color;
+      out vec4 outColor;
+      void main() {
+        float distanceFromCenter = length(gl_PointCoord - vec2(0.5));
+        float coverage = 1.0 - smoothstep(0.38, 0.5, distanceFromCenter);
+        if (coverage <= 0.0) discard;
+        outColor = vec4(v_color.rgb, v_color.a * coverage);
+      }
+    `;
+    const textureVertexShader = `#version 300 es
+      layout(location = 0) in vec2 a_position;
+      layout(location = 1) in vec2 a_uv;
+      uniform vec2 u_resolution;
+      out vec2 v_uv;
+      void main() {
+        vec2 clip = a_position / u_resolution * 2.0 - 1.0;
+        gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+        v_uv = a_uv;
+      }
+    `;
+    const textureFragmentShader = `#version 300 es
+      precision mediump float;
+      uniform sampler2D u_texture;
+      in vec2 v_uv;
+      out vec4 outColor;
+      void main() { outColor = texture(u_texture, v_uv); }
+    `;
+
+    const backgroundProgram = createProgram(positionVertexShader, backgroundFragmentShader);
+    const geometryProgram = createProgram(geometryVertexShader, geometryFragmentShader);
+    const pointProgram = createProgram(pointVertexShader, pointFragmentShader);
+    const textureProgram = createProgram(textureVertexShader, textureFragmentShader);
+    const apertureBuffer = gl.createBuffer();
+    const geometryBuffer = gl.createBuffer();
+    const pointBuffer = gl.createBuffer();
+    const textureBuffer = gl.createBuffer();
+    const labelTexture = gl.createTexture();
+    let apertureVertexCount = 0;
+    let labelSprites = [];
+    const dynamicBufferCapacities = new Map();
+
+    const createFloatBuilder = (initialCapacity) => ({
+      data: new Float32Array(initialCapacity),
+      length: 0,
+      reset() {
+        this.length = 0;
+      },
+      ensure(additionalLength) {
+        const requiredLength = this.length + additionalLength;
+        if (requiredLength > this.data.length) {
+          let nextCapacity = this.data.length;
+          while (nextCapacity < requiredLength) nextCapacity *= 2;
+          const nextData = new Float32Array(nextCapacity);
+          nextData.set(this.data);
+          this.data = nextData;
+        }
+      },
+      push() {
+        this.ensure(arguments.length);
+        for (let index = 0; index < arguments.length; index += 1) {
+          this.data[this.length] = arguments[index];
+          this.length += 1;
+        }
+      }
+    });
+    const starVertices = createFloatBuilder(1024);
+    const geometryVertices = createFloatBuilder(65536);
+    const labelVertices = createFloatBuilder(512);
+
+    const uploadDynamicBuffer = (buffer, vertices) => {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      const byteLength = vertices.length * 4;
+      let capacity = dynamicBufferCapacities.get(buffer) || 0;
+      if (byteLength > capacity) {
+        capacity = 1;
+        while (capacity < byteLength) capacity *= 2;
+        gl.bufferData(gl.ARRAY_BUFFER, capacity, gl.DYNAMIC_DRAW);
+        dynamicBufferCapacities.set(buffer, capacity);
+      }
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertices.data, 0, vertices.length);
+    };
+
+    const createVertexArray = (buffer, attributes) => {
+      const vertexArray = gl.createVertexArray();
+      gl.bindVertexArray(vertexArray);
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      for (const attribute of attributes) {
+        gl.enableVertexAttribArray(attribute.location);
+        gl.vertexAttribPointer(
+          attribute.location,
+          attribute.size,
+          gl.FLOAT,
+          false,
+          attribute.stride * 4,
+          attribute.offset * 4
+        );
+      }
+      gl.bindVertexArray(null);
+      return vertexArray;
+    };
+
+    const apertureVertexArray = createVertexArray(apertureBuffer, [
+      { location: 0, size: 2, stride: 2, offset: 0 }
+    ]);
+    const geometryVertexArray = createVertexArray(geometryBuffer, [
+      { location: 0, size: 2, stride: GEOMETRY_STRIDE, offset: 0 },
+      { location: 1, size: 4, stride: GEOMETRY_STRIDE, offset: 2 }
+    ]);
+    const pointVertexArray = createVertexArray(pointBuffer, [
+      { location: 0, size: 2, stride: POINT_STRIDE, offset: 0 },
+      { location: 1, size: 4, stride: POINT_STRIDE, offset: 2 },
+      { location: 2, size: 1, stride: POINT_STRIDE, offset: 6 }
+    ]);
+    const textureVertexArray = createVertexArray(textureBuffer, [
+      { location: 0, size: 2, stride: TEXTURE_STRIDE, offset: 0 },
+      { location: 1, size: 2, stride: TEXTURE_STRIDE, offset: 2 }
+    ]);
+    const resolutionUniforms = new Map([
+      [backgroundProgram, gl.getUniformLocation(backgroundProgram, 'u_resolution')],
+      [geometryProgram, gl.getUniformLocation(geometryProgram, 'u_resolution')],
+      [pointProgram, gl.getUniformLocation(pointProgram, 'u_resolution')],
+      [textureProgram, gl.getUniformLocation(textureProgram, 'u_resolution')]
+    ]);
+    const backgroundPixelResolutionUniform = gl.getUniformLocation(backgroundProgram, 'u_pixelResolution');
+    const pointDprUniform = gl.getUniformLocation(pointProgram, 'u_dpr');
+    const textureSamplerUniform = gl.getUniformLocation(textureProgram, 'u_texture');
+
+    gl.bindTexture(gl.TEXTURE_2D, labelTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      1,
+      1,
+      0,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      new Uint8Array([0, 0, 0, 0])
+    );
+
+    const getColor = (hex) => {
+      if (colorCache.has(hex)) return colorCache.get(hex);
+      const value = typeof hex === 'string' && /^#[0-9a-f]{6}$/i.test(hex) ? hex.slice(1) : 'ffffff';
+      const color = [
+        parseInt(value.slice(0, 2), 16) / 255,
+        parseInt(value.slice(2, 4), 16) / 255,
+        parseInt(value.slice(4, 6), 16) / 255
+      ];
+      colorCache.set(hex, color);
+      return color;
+    };
+
+    const pushGeometryXY = (vertices, x, y, color, alpha) => {
+      vertices.ensure(GEOMETRY_STRIDE);
+      let offset = vertices.length;
+      vertices.data[offset] = x;
+      vertices.data[offset += 1] = y;
+      vertices.data[offset += 1] = color[0];
+      vertices.data[offset += 1] = color[1];
+      vertices.data[offset += 1] = color[2];
+      vertices.data[offset += 1] = clamp(alpha, 0, 1);
+      vertices.length += GEOMETRY_STRIDE;
+    };
+
+    const pushGeometryVertex = (vertices, point, color, alpha) => {
+      pushGeometryXY(vertices, point.x, point.y, color, alpha);
+    };
+
+    const appendPolygon = (vertices, points, color, alpha) => {
+      for (let index = 1; index < points.length - 1; index += 1) {
+        pushGeometryVertex(vertices, points[0], color, alpha);
+        pushGeometryVertex(vertices, points[index], color, alpha);
+        pushGeometryVertex(vertices, points[index + 1], color, alpha);
+      }
+    };
+
+    const appendLine = (vertices, from, to, width, color, alpha) => {
+      const deltaX = to.x - from.x;
+      const deltaY = to.y - from.y;
+      const inverseLength = 1 / (Math.sqrt(deltaX * deltaX + deltaY * deltaY) || 1);
+      const normalX = -deltaY * inverseLength * width * .5;
+      const normalY = deltaX * inverseLength * width * .5;
+      const fromPlusX = from.x + normalX;
+      const fromPlusY = from.y + normalY;
+      const fromMinusX = from.x - normalX;
+      const fromMinusY = from.y - normalY;
+      const toPlusX = to.x + normalX;
+      const toPlusY = to.y + normalY;
+      const toMinusX = to.x - normalX;
+      const toMinusY = to.y - normalY;
+      pushGeometryXY(vertices, fromPlusX, fromPlusY, color, alpha);
+      pushGeometryXY(vertices, fromMinusX, fromMinusY, color, alpha);
+      pushGeometryXY(vertices, toPlusX, toPlusY, color, alpha);
+      pushGeometryXY(vertices, toPlusX, toPlusY, color, alpha);
+      pushGeometryXY(vertices, fromMinusX, fromMinusY, color, alpha);
+      pushGeometryXY(vertices, toMinusX, toMinusY, color, alpha);
+    };
+
+    const appendLineWithGlow = (vertices, from, to, width, color, alpha, glow) => {
+      if (glow > .1) {
+        appendLine(vertices, from, to, width + glow * 1.8, color, alpha * .055);
+        appendLine(vertices, from, to, width + glow * .72, color, alpha * .12);
+      }
+      appendLine(vertices, from, to, width, color, alpha);
+    };
+
+    const appendPath = (vertices, points, width, color, alpha, glow = 0, closed = false) => {
+      const segmentCount = closed ? points.length : points.length - 1;
+      for (let index = 0; index < segmentCount; index += 1) {
+        appendLineWithGlow(
+          vertices,
+          points[index],
+          points[(index + 1) % points.length],
+          width,
+          color,
+          alpha,
+          glow
+        );
+      }
+    };
+
+    const appendCube = (vertices, cube, options = {}, rotationCache = null) => {
+      const settings = {
+        seed: 0,
+        vertexJitter: 0,
+        offsetX: 0,
+        offsetY: 0,
+        wireOnly: false,
+        textureAlpha: 1,
+        textureColor: VECTOR_COLOR,
+        edgeColor: EDGE_COLOR,
+        edgeAlpha: 1,
+        edgeGlow: 1,
+        faceOutlineColor: VECTOR_COLOR,
+        faceOutlineAlpha: .28,
+        faceOutlineScale: 1,
+        faceGlow: 0,
+        fillAlpha: 1,
+        ...options
+      };
+      const rotation = rotationCache || createRotationCache(cube.rotation);
+      const geometry = settings.wireOnly
+        ? wireRenderGeometry
+        : cube.renderGeometry || (cube.renderGeometry = createCubeRenderGeometry());
+      const worldVertices = transformedVertices(cube, settings, rotation, geometry.worldVertices);
+      const projectedVertices = projectVertices(worldVertices, settings, geometry.projectedVertices);
+      const edgeColor = getColor(settings.edgeColor);
+      const edgeWidth = Math.max(.8, cube.half * 1.35);
+      const edgeGlow = (
+        settings.edgeColor === EDGE_COLOR ? Math.max(5, cube.half * 5.2) : Math.max(3, cube.half * 3)
+      ) * settings.edgeGlow;
+
+      if (settings.wireOnly) {
+        for (const [from, to] of cubeEdges) {
+          appendLineWithGlow(
+            vertices,
+            projectedVertices[from],
+            projectedVertices[to],
+            edgeWidth,
+            edgeColor,
+            settings.edgeAlpha,
+            edgeGlow
+          );
+        }
+        return null;
+      }
+
+      const projectedFaces = geometry.projectedFaces;
+      for (let index = 0; index < geometry.faceItems.length; index += 1) {
+        projectedFaces[index] = geometry.faceItems[index];
+      }
+      for (const item of projectedFaces) {
+        const face = item.face;
+        item.facing = getFaceFacing(cube, face.normal, rotation);
+        item.depth = face.vertices.reduce((sum, vertexIndex) => sum + worldVertices[vertexIndex].z, 0) /
+          face.vertices.length;
+      }
+      projectedFaces.sort((a, b) => a.depth - b.depth);
+
+      const faceColor = getColor(FACE_COLOR);
+      for (const item of projectedFaces) {
+        const faceAlpha = settings.fillAlpha * clamp(.13 + Math.max(0, item.facing) * .22, .10, .36);
+        appendPolygon(vertices, item.points, faceColor, faceAlpha);
+      }
+
+      const textureColor = getColor(settings.textureColor);
+      const outlineColor = getColor(settings.faceOutlineColor);
+      for (const item of projectedFaces) {
+        const localAlpha = settings.textureAlpha * clamp(.24 + Math.max(0, item.facing) * .76, .2, 1);
+        const textureVisibility = clamp(.38 + item.facing * .62, .12, 1);
+        const textureAlpha = clamp(settings.textureAlpha * textureVisibility, 0, 1);
+        const textureGeometry = item.face.textureGeometry;
+        for (let index = 0; index < textureGeometry.points.length; index += 1) {
+          projectFaceTexturePoint(
+            cube,
+            textureGeometry.points[index],
+            settings,
+            rotation,
+            textureGeometry.projected[index]
+          );
+        }
+        for (const [from, to] of textureGeometry.segments) {
+          appendLine(
+            vertices,
+            textureGeometry.projected[from],
+            textureGeometry.projected[to],
+            Math.max(.72, cube.half * 2.15),
+            textureColor,
+            textureAlpha
+          );
+        }
+        appendPath(
+          vertices,
+          item.points,
+          Math.max(.45, cube.half * .48) * settings.faceOutlineScale,
+          outlineColor,
+          localAlpha * settings.faceOutlineAlpha,
+          settings.faceGlow,
+          true
+        );
+      }
+
+      for (const [from, to] of cubeEdges) {
+        appendLineWithGlow(
+          vertices,
+          projectedVertices[from],
+          projectedVertices[to],
+          edgeWidth,
+          edgeColor,
+          settings.edgeAlpha,
+          edgeGlow
+        );
+      }
+      updateBounds(projectedVertices, geometry.bounds);
+      return geometry.hit;
+    };
+
+    const rebuildApertures = () => {
+      const vertices = [];
+      for (const mini of app.minis) {
+        const points = getBunkerAperturePoints(mini.aperture);
+        for (let index = 1; index < points.length - 1; index += 1) {
+          vertices.push(
+            points[0].x, points[0].y,
+            points[index].x, points[index].y,
+            points[index + 1].x, points[index + 1].y
+          );
+        }
+      }
+      apertureVertexCount = vertices.length / 2;
+      gl.bindBuffer(gl.ARRAY_BUFFER, apertureBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+    };
+
+    const rebuildLabelAtlas = () => {
+      const atlas = document.createElement('canvas');
+      const measure = atlas.getContext('2d');
+      const dpr = viewport.dpr;
+      const horizontalPadding = Math.ceil(8 * viewport.labelUnit * dpr);
+      const verticalPadding = Math.ceil(4 * viewport.labelUnit * dpr);
+      const labelFont = `600 ${viewport.labelSize * dpr}px ${FONT_STACK}`;
+      const urlFont = `${viewport.urlSize * dpr}px ${FONT_STACK}`;
+      const definitions = app.minis.map((mini) => {
+        measure.font = labelFont;
+        const labelWidth = measure.measureText(mini.label).width;
+        measure.font = urlFont;
+        const urlWidth = measure.measureText(mini.href).width;
+        const labelCenterY = verticalPadding + viewport.labelSize * dpr * .5;
+        const urlCenterY = labelCenterY + 13 * viewport.labelUnit * dpr;
+        return {
+          width: Math.ceil(Math.max(labelWidth, urlWidth) + horizontalPadding * 2),
+          height: Math.ceil(urlCenterY + viewport.urlSize * dpr * .5 + verticalPadding),
+          labelCenterY,
+          urlCenterY
+        };
+      });
+      const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+      const requestedWidth = definitions.reduce((sum, definition) => sum + definition.width, 0);
+      const atlasWidth = Math.min(maxTextureSize, Math.max(1, requestedWidth));
+      let cursorX = 0;
+      let cursorY = 0;
+      let rowHeight = 0;
+      for (const definition of definitions) {
+        if (cursorX && cursorX + definition.width > atlasWidth) {
+          cursorX = 0;
+          cursorY += rowHeight;
+          rowHeight = 0;
+        }
+        definition.x = cursorX;
+        definition.y = cursorY;
+        cursorX += definition.width;
+        rowHeight = Math.max(rowHeight, definition.height);
+      }
+      atlas.width = atlasWidth;
+      atlas.height = Math.max(1, cursorY + rowHeight);
+      const context = atlas.getContext('2d');
+      context.textAlign = 'center';
+      context.textBaseline = 'middle';
+      labelSprites = definitions.map((definition, index) => {
+        const mini = app.minis[index];
+        const centerX = definition.x + definition.width / 2;
+        context.font = labelFont;
+        context.fillStyle = 'rgba(227, 255, 246, .78)';
+        context.shadowColor = 'rgba(0, 255, 102, .28)';
+        context.shadowBlur = 5 * dpr;
+        context.fillText(mini.label, centerX, definition.y + definition.labelCenterY);
+        context.font = urlFont;
+        context.fillStyle = 'rgba(0, 255, 102, .53)';
+        context.shadowBlur = 0;
+        context.fillText(mini.href, centerX, definition.y + definition.urlCenterY);
+        return {
+          width: definition.width / dpr,
+          height: definition.height / dpr,
+          labelCenterY: definition.labelCenterY / dpr,
+          u0: definition.x / atlas.width,
+          v0: definition.y / atlas.height,
+          u1: (definition.x + definition.width) / atlas.width,
+          v1: (definition.y + definition.height) / atlas.height
+        };
+      });
+      gl.bindTexture(gl.TEXTURE_2D, labelTexture);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
+    };
+
+    const appendLabel = (vertices, mini) => {
+      if (!mini.hit) return;
+      const sprite = labelSprites[mini.index];
+      if (!sprite) return;
+      const centerX = (mini.hit.bounds.left + mini.hit.bounds.right) / 2;
+      const labelY = mini.hit.bounds.bottom + 23 * viewport.labelUnit;
+      const left = centerX - sprite.width / 2;
+      const right = left + sprite.width;
+      const top = labelY - sprite.labelCenterY;
+      const bottom = top + sprite.height;
+      vertices.push(
+        left, top, sprite.u0, sprite.v0,
+        left, bottom, sprite.u0, sprite.v1,
+        right, top, sprite.u1, sprite.v0,
+        right, top, sprite.u1, sprite.v0,
+        left, bottom, sprite.u0, sprite.v1,
+        right, bottom, sprite.u1, sprite.v1
+      );
+    };
+
+    const useResolution = (program) => {
+      gl.useProgram(program);
+      gl.uniform2f(resolutionUniforms.get(program), viewport.width, viewport.height);
+    };
+
+    const render = (time, frameSeed) => {
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.disable(gl.BLEND);
+      gl.enable(gl.STENCIL_TEST);
+      gl.clearColor(5 / 255, 5 / 255, 14 / 255, 1);
+      gl.clearStencil(0);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
+
+      gl.bindVertexArray(apertureVertexArray);
+      useResolution(backgroundProgram);
+      gl.uniform2f(backgroundPixelResolutionUniform, canvas.width, canvas.height);
+      gl.colorMask(false, false, false, false);
+      gl.stencilMask(0xff);
+      gl.stencilFunc(gl.ALWAYS, 1, 0xff);
+      gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+      gl.drawArrays(gl.TRIANGLES, 0, apertureVertexCount);
+      gl.colorMask(true, true, true, true);
+      gl.stencilMask(0x00);
+      gl.stencilFunc(gl.EQUAL, 1, 0xff);
+      gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+      gl.drawArrays(gl.TRIANGLES, 0, apertureVertexCount);
+
+      starVertices.reset();
+      for (const star of viewport.visibleStars) {
+        const shimmer = .74 + Math.sin(time * .00045 + star.phase) * .26;
+        const isCyan = star.radius > 1;
+        starVertices.push(
+          star.x * viewport.width,
+          star.y * viewport.height,
+          isCyan ? 192 / 255 : 1,
+          isCyan ? 250 / 255 : 1,
+          1,
+          star.alpha * shimmer,
+          star.radius * 2
+        );
+      }
+      if (starVertices.length) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.bindVertexArray(pointVertexArray);
+        uploadDynamicBuffer(pointBuffer, starVertices);
+        useResolution(pointProgram);
+        gl.uniform1f(pointDprUniform, viewport.dpr);
+        gl.drawArrays(gl.POINTS, 0, starVertices.length / POINT_STRIDE);
+      }
+
+      geometryVertices.reset();
+      for (const mini of app.minis) {
+        const bayState = bulkheadState.bays[mini.index];
+        const hovered = bayState.isOpened && !bayState.isOpening && mini.hovered;
+        const feedback = getBulkheadFeedback(mini.index, time);
+        const unlockHighlight = feedback.intensity > .02;
+        const rotation = createRotationCache(mini.rotation);
+        if (glitch.active) {
+          appendCube(geometryVertices, mini, {
+            wireOnly: true,
+            edgeColor: GLITCH_MAGENTA,
+            edgeAlpha: .84 * glitch.intensity,
+            offsetX: -4.5 * glitch.intensity,
+            offsetY: .8 * glitch.intensity,
+            vertexJitter: .075 * glitch.intensity,
+            seed: frameSeed + mini.index * 9
+          }, rotation);
+          appendCube(geometryVertices, mini, {
+            wireOnly: true,
+            edgeColor: GLITCH_CYAN,
+            edgeAlpha: .88 * glitch.intensity,
+            offsetX: 4.5 * glitch.intensity,
+            offsetY: -.8 * glitch.intensity,
+            vertexJitter: .07 * glitch.intensity,
+            seed: frameSeed + mini.index * 11 + 29
+          }, rotation);
+        }
+        mini.hit = appendCube(geometryVertices, mini, {
+          vertexJitter: glitch.active ? .06 * glitch.intensity : 0,
+          seed: frameSeed + mini.index,
+          edgeAlpha: unlockHighlight ? 1.18 + feedback.intensity * .22 : hovered ? 1.35 : .92,
+          edgeColor: unlockHighlight ? feedback.color : hovered ? '#ffffff' : EDGE_COLOR,
+          faceOutlineColor: unlockHighlight ? feedback.color : VECTOR_COLOR,
+          textureColor: unlockHighlight ? feedback.color : VECTOR_COLOR,
+          fillAlpha: unlockHighlight ? 1.02 + feedback.intensity * .14 : hovered ? 1.16 : .88,
+          textureAlpha: unlockHighlight ? 1.02 + feedback.intensity * .16 : hovered ? 1.18 : .82
+        }, rotation);
+      }
+      if (geometryVertices.length) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.bindVertexArray(geometryVertexArray);
+        uploadDynamicBuffer(geometryBuffer, geometryVertices);
+        useResolution(geometryProgram);
+        gl.drawArrays(gl.TRIANGLES, 0, geometryVertices.length / GEOMETRY_STRIDE);
+      }
+
+      labelVertices.reset();
+      for (const mini of app.minis) appendLabel(labelVertices, mini);
+      if (labelVertices.length) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.bindVertexArray(textureVertexArray);
+        uploadDynamicBuffer(textureBuffer, labelVertices);
+        useResolution(textureProgram);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, labelTexture);
+        gl.uniform1i(textureSamplerUniform, 0);
+        gl.drawArrays(gl.TRIANGLES, 0, labelVertices.length / TEXTURE_STRIDE);
+      }
+
+      gl.bindVertexArray(null);
+      gl.disable(gl.STENCIL_TEST);
+    };
+
+    return {
+      resize() {
+        rebuildApertures();
+        rebuildLabelAtlas();
+      },
+      render
+    };
+  }
+
+  let gpuRenderer = null;
+  try {
+    gpuRenderer = createWebGL2Renderer(gl);
+    canvas.dataset.renderer = 'webgl2';
+  } catch (error) {
+    canvas.dataset.renderer = 'unavailable';
+    throw error;
+  }
+
+  window.cubusRenderer = Object.freeze({
+    get backend() { return canvas.dataset.renderer; }
+  });
+
+  canvas.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    gpuRenderer = null;
+    canvas.dataset.renderer = 'restoring';
+    if (app.frameRequest) cancelAnimationFrame(app.frameRequest);
+    app.frameRequest = 0;
+  });
+  canvas.addEventListener('webglcontextrestored', () => {
+    try {
+      gpuRenderer = createWebGL2Renderer(gl);
+      gpuRenderer.resize();
+      canvas.dataset.renderer = 'webgl2';
+      app.lastTime = performance.now();
+      app.lastFrameAt = 0;
+      scheduleAnimationFrame();
+    } catch (error) {
+      gpuRenderer = null;
+      canvas.dataset.renderer = 'unavailable';
+      console.error('[CUBUS RENDERER] WebGL2 restoration failed.', error);
+    }
+  });
 
   const glitch = {
     active: false,
@@ -2232,7 +2722,6 @@
     pointerActive: false,
     pointer: { x: -9999, y: -9999 },
     minis: [],
-    sceneClipPath: null,
     lastTime: performance.now(),
     lastFrameAt: 0,
     frameRequest: 0
@@ -2371,7 +2860,6 @@
     const layout = getResponsiveGridLayout();
     const apertureSize = layout.apertureSize;
     const apertureCut = clamp(apertureSize * .2, 10, 34);
-    const sceneClipPath = new Path2D();
     for (const mini of app.minis) {
       mini.column = mini.index % layout.columns;
       mini.row = Math.floor(mini.index / layout.columns);
@@ -2391,9 +2879,7 @@
       mini.keypadLayout = getShutterKeypadLayout(mini.aperture);
       mini.shutterGradients = { top: null, bottom: null };
       mini.shutterSprites = null;
-      appendBunkerAperturePath(sceneClipPath, mini.aperture);
     }
-    app.sceneClipPath = sceneClipPath;
     viewport.visibleStars = viewport.stars.filter((star) => {
       const x = star.x * viewport.width;
       const y = star.y * viewport.height;
@@ -2508,78 +2994,10 @@
     if (wallChanged) drawBunkerWall();
   }
 
-  function drawCubeLabel(mini) {
-    if (!mini.hit) return;
-    const centerX = (mini.hit.bounds.left + mini.hit.bounds.right) / 2;
-    const bottom = mini.hit.bounds.bottom;
-    const labelY = bottom + 23 * viewport.labelUnit;
-    const urlY = labelY + 13 * viewport.labelUnit;
-
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = `600 ${viewport.labelSize}px ${FONT_STACK}`;
-    ctx.fillStyle = 'rgba(227, 255, 246, .78)';
-    ctx.shadowColor = 'rgba(0, 255, 102, .28)';
-    ctx.shadowBlur = 5;
-    ctx.fillText(mini.label, centerX, labelY);
-    ctx.shadowBlur = 0;
-    ctx.font = `${viewport.urlSize}px ${FONT_STACK}`;
-    ctx.fillStyle = 'rgba(0, 255, 102, .53)';
-    ctx.fillText(mini.href, centerX, urlY);
-  }
-
-  function renderMini(mini, time, frameSeed) {
-    const bayState = bulkheadState.bays[mini.index];
-    const hovered = bayState.isOpened && !bayState.isOpening && mini.hovered;
-    const feedback = getBulkheadFeedback(mini.index, time);
-    const unlockHighlight = feedback.intensity > .02;
-    const glitchActive = glitch.active;
-    const rotation = createRotationCache(mini.rotation);
-    if (glitchActive) {
-      renderCube(mini, {
-        wireOnly: true,
-        edgeColor: GLITCH_MAGENTA,
-        edgeAlpha: .84 * glitch.intensity,
-        offsetX: -4.5 * glitch.intensity,
-        offsetY: .8 * glitch.intensity,
-        vertexJitter: .075 * glitch.intensity,
-        seed: frameSeed + mini.index * 9
-      }, rotation);
-      renderCube(mini, {
-        wireOnly: true,
-        edgeColor: GLITCH_CYAN,
-        edgeAlpha: .88 * glitch.intensity,
-        offsetX: 4.5 * glitch.intensity,
-        offsetY: -.8 * glitch.intensity,
-        vertexJitter: .07 * glitch.intensity,
-        seed: frameSeed + mini.index * 11 + 29
-      }, rotation);
-    }
-    mini.hit = renderCube(mini, {
-      vertexJitter: glitchActive ? .06 * glitch.intensity : 0,
-      seed: frameSeed + mini.index,
-      edgeAlpha: unlockHighlight ? 1.18 + feedback.intensity * .22 : hovered ? 1.35 : .92,
-      edgeColor: unlockHighlight ? feedback.color : hovered ? '#ffffff' : EDGE_COLOR,
-      faceOutlineColor: unlockHighlight ? feedback.color : VECTOR_COLOR,
-      textureColor: unlockHighlight ? feedback.color : VECTOR_COLOR,
-      fillAlpha: unlockHighlight ? 1.02 + feedback.intensity * .14 : hovered ? 1.16 : .88,
-      textureAlpha: unlockHighlight ? 1.02 + feedback.intensity * .16 : hovered ? 1.18 : .82
-    }, rotation);
-  }
-
   function render(time) {
-    ctx.save();
-    if (app.sceneClipPath) ctx.clip(app.sceneClipPath);
-    drawBackground(time);
     updateGlitch(time);
-
     const frameSeed = glitch.active ? glitch.seed + Math.floor(time / 16.6667) : 0;
-    for (const mini of app.minis) renderMini(mini, time, frameSeed);
-    ctx.save();
-    for (const mini of app.minis) drawCubeLabel(mini);
-    ctx.restore();
-    ctx.restore();
-
+    gpuRenderer.render(time, frameSeed);
     if (app.pointerActive) updateHover();
   }
 
@@ -2608,7 +3026,7 @@
   }
 
   function scheduleAnimationFrame() {
-    if (!app.frameRequest && !document.hidden) {
+    if (gpuRenderer && !app.frameRequest && !document.hidden) {
       app.frameRequest = requestAnimationFrame(frame);
     }
   }
