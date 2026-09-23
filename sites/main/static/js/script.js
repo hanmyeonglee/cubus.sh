@@ -5,7 +5,7 @@
   const gl = canvas.getContext('webgl2', {
     alpha: false,
     antialias: true,
-    depth: false,
+    depth: true,
     stencil: true,
     powerPreference: 'high-performance',
     preserveDrawingBuffer: false
@@ -48,6 +48,9 @@
   const TAU = Math.PI * 2;
   const CAMERA_Z = 7.8;
   const CAMERA_FOCAL = 6.7;
+  const LABEL_PLANE_WIDTH_RATIO = 1.15;
+  const LABEL_THICKNESS_RATIO = .16;
+  const DEPTH_NEAR = .1;
   const MINI_FRAME_FILL_RATIO = .86;
   const MINI_CUBE_SCALE = .8;
   const EDGE_COLOR = '#f4ffff';
@@ -58,14 +61,14 @@
   const FONT_STACK = '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace';
 
   const navItems = [
-    { href: 'https://about.cubus.sh' },
-    { href: '#undefined' },
-    { href: '#undefined' },
-    { href: '#undefined' },
-    { href: '#undefined' },
-    { href: '#undefined' },
-    { href: '#undefined' },
-    { href: '#undefined' }
+    { label: 'ABOUT', href: 'https://about.cubus.sh' },
+    { label: '???', href: '#undefined' },
+    { label: '???', href: '#undefined' },
+    { label: '???', href: '#undefined' },
+    { label: '???', href: '#undefined' },
+    { label: '???', href: '#undefined' },
+    { label: '???', href: '#undefined' },
+    { label: '???', href: '#undefined' }
   ];
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -1599,7 +1602,7 @@
 
   function createCubeRenderGeometry(includeFaces = true) {
     const worldVertices = cubeVertices.map(() => vec());
-    const projectedVertices = cubeVertices.map(() => ({ x: 0, y: 0 }));
+    const projectedVertices = cubeVertices.map(() => ({ x: 0, y: 0, depth: 1 }));
     if (!includeFaces) return { worldVertices, projectedVertices };
 
     const faceItems = faceDefs.map((face) => ({
@@ -1665,6 +1668,7 @@
       const perspective = CAMERA_FOCAL / depth;
       target[index].x = viewport.centerX + world.x * viewport.scale * perspective + options.offsetX;
       target[index].y = viewport.centerY - world.y * viewport.scale * perspective + options.offsetY;
+      target[index].depth = clamp(1 - DEPTH_NEAR / depth, 0, 1);
     }
     return target;
   }
@@ -1687,8 +1691,9 @@
   }
 
   function createWebGL2Renderer(gl) {
-    const GEOMETRY_STRIDE = 6;
+    const GEOMETRY_STRIDE = 7;
     const POINT_STRIDE = 7;
+    const LABEL_STRIDE = 6;
     const colorCache = new Map();
 
     const compileShader = (type, source) => {
@@ -1774,12 +1779,13 @@
     `;
     const geometryVertexShader = `#version 300 es
       layout(location = 0) in vec2 a_position;
-      layout(location = 1) in vec4 a_color;
+      layout(location = 1) in float a_depth;
+      layout(location = 2) in vec4 a_color;
       uniform vec2 u_resolution;
       out vec4 v_color;
       void main() {
         vec2 clip = a_position / u_resolution * 2.0 - 1.0;
-        gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+        gl_Position = vec4(clip.x, -clip.y, a_depth * 2.0 - 1.0, 1.0);
         v_color = a_color;
       }
     `;
@@ -1814,12 +1820,46 @@
         outColor = vec4(v_color.rgb, v_color.a * coverage);
       }
     `;
+    const labelVertexShader = `#version 300 es
+      layout(location = 0) in vec2 a_position;
+      layout(location = 1) in float a_depth;
+      layout(location = 2) in float a_cameraDepth;
+      layout(location = 3) in vec2 a_uv;
+      uniform vec2 u_resolution;
+      out vec2 v_uv;
+      void main() {
+        vec2 clip = a_position / u_resolution * 2.0 - 1.0;
+        gl_Position = vec4(
+          clip.x * a_cameraDepth,
+          -clip.y * a_cameraDepth,
+          (a_depth * 2.0 - 1.0) * a_cameraDepth,
+          a_cameraDepth
+        );
+        v_uv = a_uv;
+      }
+    `;
+    const labelFragmentShader = `#version 300 es
+      precision mediump float;
+      uniform sampler2D u_label;
+      uniform vec3 u_color;
+      uniform float u_alpha;
+      in vec2 v_uv;
+      out vec4 outColor;
+      void main() {
+        float coverage = texture(u_label, v_uv).a;
+        if (coverage <= 0.01) discard;
+        outColor = vec4(u_color, coverage * u_alpha);
+      }
+    `;
     const backgroundProgram = createProgram(positionVertexShader, backgroundFragmentShader);
     const geometryProgram = createProgram(geometryVertexShader, geometryFragmentShader);
     const pointProgram = createProgram(pointVertexShader, pointFragmentShader);
+    const labelProgram = createProgram(labelVertexShader, labelFragmentShader);
     const apertureBuffer = gl.createBuffer();
     const geometryBuffer = gl.createBuffer();
     const pointBuffer = gl.createBuffer();
+    const labelBuffer = gl.createBuffer();
+    const labelTextures = new Map();
     let apertureVertexCount = 0;
     const dynamicBufferCapacities = new Map();
 
@@ -1849,6 +1889,9 @@
     });
     const starVertices = createFloatBuilder(1024);
     const geometryVertices = createFloatBuilder(65536);
+    const faceVertices = createFloatBuilder(16384);
+    const labelVertices = createFloatBuilder(1024);
+    const labelSideVertices = createFloatBuilder(8192);
 
     const uploadDynamicBuffer = (buffer, vertices) => {
       gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
@@ -1887,20 +1930,31 @@
     ]);
     const geometryVertexArray = createVertexArray(geometryBuffer, [
       { location: 0, size: 2, stride: GEOMETRY_STRIDE, offset: 0 },
-      { location: 1, size: 4, stride: GEOMETRY_STRIDE, offset: 2 }
+      { location: 1, size: 1, stride: GEOMETRY_STRIDE, offset: 2 },
+      { location: 2, size: 4, stride: GEOMETRY_STRIDE, offset: 3 }
     ]);
     const pointVertexArray = createVertexArray(pointBuffer, [
       { location: 0, size: 2, stride: POINT_STRIDE, offset: 0 },
       { location: 1, size: 4, stride: POINT_STRIDE, offset: 2 },
       { location: 2, size: 1, stride: POINT_STRIDE, offset: 6 }
     ]);
+    const labelVertexArray = createVertexArray(labelBuffer, [
+      { location: 0, size: 2, stride: LABEL_STRIDE, offset: 0 },
+      { location: 1, size: 1, stride: LABEL_STRIDE, offset: 2 },
+      { location: 2, size: 1, stride: LABEL_STRIDE, offset: 3 },
+      { location: 3, size: 2, stride: LABEL_STRIDE, offset: 4 }
+    ]);
     const resolutionUniforms = new Map([
       [backgroundProgram, gl.getUniformLocation(backgroundProgram, 'u_resolution')],
       [geometryProgram, gl.getUniformLocation(geometryProgram, 'u_resolution')],
-      [pointProgram, gl.getUniformLocation(pointProgram, 'u_resolution')]
+      [pointProgram, gl.getUniformLocation(pointProgram, 'u_resolution')],
+      [labelProgram, gl.getUniformLocation(labelProgram, 'u_resolution')]
     ]);
     const backgroundPixelResolutionUniform = gl.getUniformLocation(backgroundProgram, 'u_pixelResolution');
     const pointDprUniform = gl.getUniformLocation(pointProgram, 'u_dpr');
+    const labelSamplerUniform = gl.getUniformLocation(labelProgram, 'u_label');
+    const labelColorUniform = gl.getUniformLocation(labelProgram, 'u_color');
+    const labelAlphaUniform = gl.getUniformLocation(labelProgram, 'u_alpha');
 
     const getColor = (hex) => {
       if (colorCache.has(hex)) return colorCache.get(hex);
@@ -1914,11 +1968,84 @@
       return color;
     };
 
-    const pushGeometryXY = (vertices, x, y, color, alpha) => {
+    const getLabelTexture = (label) => {
+      if (labelTextures.has(label)) return labelTextures.get(label);
+      const source = document.createElement('canvas');
+      const sourceContext = source.getContext('2d');
+      const fontSize = 128;
+      const horizontalPadding = 28;
+      sourceContext.font = `700 ${fontSize}px ${FONT_STACK}`;
+      source.width = Math.ceil(sourceContext.measureText(label).width + horizontalPadding * 2);
+      source.height = 184;
+      const context = source.getContext('2d');
+      context.font = `700 ${fontSize}px ${FONT_STACK}`;
+      context.textAlign = 'center';
+      context.textBaseline = 'middle';
+      context.fillStyle = '#ffffff';
+      context.fillText(label, source.width / 2, source.height / 2);
+
+      const alphaData = context.getImageData(0, 0, source.width, source.height).data;
+      const isFilled = (x, y) => {
+        if (x < 0 || x >= source.width || y < 0 || y >= source.height) return false;
+        return alphaData[(y * source.width + x) * 4 + 3] >= 128;
+      };
+      const sideSegments = [];
+      const appendRuns = (limit, isExposed, createSegment) => {
+        let runStart = -1;
+        for (let index = 0; index <= limit; index += 1) {
+          if (index < limit && isExposed(index)) {
+            if (runStart < 0) runStart = index;
+          } else if (runStart >= 0) {
+            sideSegments.push(createSegment(runStart, index));
+            runStart = -1;
+          }
+        }
+      };
+      for (let y = 0; y < source.height; y += 1) {
+        appendRuns(source.width, (x) => isFilled(x, y) && !isFilled(x, y - 1), (start, end) => ({
+          x1: start, y1: y, x2: end, y2: y
+        }));
+        appendRuns(source.width, (x) => isFilled(x, y) && !isFilled(x, y + 1), (start, end) => ({
+          x1: start, y1: y + 1, x2: end, y2: y + 1
+        }));
+      }
+      for (let x = 0; x < source.width; x += 1) {
+        appendRuns(source.height, (y) => isFilled(x, y) && !isFilled(x - 1, y), (start, end) => ({
+          x1: x, y1: start, x2: x, y2: end
+        }));
+        appendRuns(source.height, (y) => isFilled(x, y) && !isFilled(x + 1, y), (start, end) => ({
+          x1: x + 1, y1: start, x2: x + 1, y2: end
+        }));
+      }
+
+      const texture = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      const labelTexture = {
+        texture,
+        aspect: source.width / source.height,
+        width: source.width,
+        height: source.height,
+        sideSegments
+      };
+      labelTextures.set(label, labelTexture);
+      return labelTexture;
+    };
+
+    const pushGeometryXY = (vertices, x, y, depth, color, alpha) => {
       vertices.ensure(GEOMETRY_STRIDE);
       let offset = vertices.length;
       vertices.data[offset] = x;
       vertices.data[offset += 1] = y;
+      vertices.data[offset += 1] = depth;
       vertices.data[offset += 1] = color[0];
       vertices.data[offset += 1] = color[1];
       vertices.data[offset += 1] = color[2];
@@ -1927,7 +2054,7 @@
     };
 
     const pushGeometryVertex = (vertices, point, color, alpha) => {
-      pushGeometryXY(vertices, point.x, point.y, color, alpha);
+      pushGeometryXY(vertices, point.x, point.y, point.depth, color, alpha);
     };
 
     const appendPolygon = (vertices, points, color, alpha) => {
@@ -1952,12 +2079,12 @@
       const toPlusY = to.y + normalY;
       const toMinusX = to.x - normalX;
       const toMinusY = to.y - normalY;
-      pushGeometryXY(vertices, fromPlusX, fromPlusY, color, alpha);
-      pushGeometryXY(vertices, fromMinusX, fromMinusY, color, alpha);
-      pushGeometryXY(vertices, toPlusX, toPlusY, color, alpha);
-      pushGeometryXY(vertices, toPlusX, toPlusY, color, alpha);
-      pushGeometryXY(vertices, fromMinusX, fromMinusY, color, alpha);
-      pushGeometryXY(vertices, toMinusX, toMinusY, color, alpha);
+      pushGeometryXY(vertices, fromPlusX, fromPlusY, from.depth, color, alpha);
+      pushGeometryXY(vertices, fromMinusX, fromMinusY, from.depth, color, alpha);
+      pushGeometryXY(vertices, toPlusX, toPlusY, to.depth, color, alpha);
+      pushGeometryXY(vertices, toPlusX, toPlusY, to.depth, color, alpha);
+      pushGeometryXY(vertices, fromMinusX, fromMinusY, from.depth, color, alpha);
+      pushGeometryXY(vertices, toMinusX, toMinusY, to.depth, color, alpha);
     };
 
     const appendLineWithGlow = (vertices, from, to, width, color, alpha, glow) => {
@@ -1983,7 +2110,7 @@
       }
     };
 
-    const appendCube = (vertices, cube, options = {}, rotationCache = null) => {
+    const appendCube = (faceVertices, edgeVertices, cube, options = {}, rotationCache = null) => {
       const settings = {
         seed: 0,
         vertexJitter: 0,
@@ -2016,7 +2143,7 @@
       if (settings.wireOnly) {
         for (const [from, to] of cubeEdges) {
           appendLineWithGlow(
-            vertices,
+            edgeVertices,
             projectedVertices[from],
             projectedVertices[to],
             edgeWidth,
@@ -2043,7 +2170,7 @@
       const faceColor = getColor(FACE_COLOR);
       for (const item of projectedFaces) {
         const faceAlpha = settings.fillAlpha * clamp(.13 + Math.max(0, item.facing) * .22, .10, .36);
-        appendPolygon(vertices, item.points, faceColor, faceAlpha);
+        appendPolygon(faceVertices, item.points, faceColor, faceAlpha);
       }
 
       const outlineColor = getColor(settings.faceOutlineColor);
@@ -2051,7 +2178,7 @@
         const localAlpha = settings.faceOutlineOpacity *
           clamp(.24 + Math.max(0, item.facing) * .76, .2, 1);
         appendPath(
-          vertices,
+          edgeVertices,
           item.points,
           Math.max(.45, cube.half * .48) * settings.faceOutlineScale,
           outlineColor,
@@ -2063,7 +2190,7 @@
 
       for (const [from, to] of cubeEdges) {
         appendLineWithGlow(
-          vertices,
+          edgeVertices,
           projectedVertices[from],
           projectedVertices[to],
           edgeWidth,
@@ -2074,6 +2201,90 @@
       }
       updateBounds(projectedVertices, geometry.bounds);
       return geometry.hit;
+    };
+
+    const projectMiniLabelPoint = (mini, rotation, localX, localY, localZ, offsetX, offsetY) => {
+      const rotatedX = localX * rotation.cosZ - localY * rotation.sinZ;
+      const rotatedY = localX * rotation.sinZ + localY * rotation.cosZ;
+      const yawedX = rotatedX * rotation.cosY + localZ * rotation.sinY;
+      const yawedZ = -rotatedX * rotation.sinY + localZ * rotation.cosY;
+      const pitchedY = rotatedY * rotation.cosX - yawedZ * rotation.sinX;
+      const pitchedZ = rotatedY * rotation.sinX + yawedZ * rotation.cosX;
+      const worldX = mini.position.x + yawedX;
+      const worldY = mini.position.y + pitchedY;
+      const worldZ = mini.position.z + pitchedZ;
+      const cameraDepth = Math.max(.8, CAMERA_Z - worldZ);
+      const perspective = CAMERA_FOCAL / cameraDepth;
+      return {
+        x: viewport.centerX + worldX * viewport.scale * perspective + offsetX,
+        y: viewport.centerY - worldY * viewport.scale * perspective + offsetY,
+        depth: clamp(1 - DEPTH_NEAR / cameraDepth, 0, 1),
+        cameraDepth
+      };
+    };
+
+    const getMiniLabelDimensions = (mini, labelTexture) => {
+      const halfDepth = mini.half * LABEL_THICKNESS_RATIO * .5;
+      // Bound the full extruded glyph to a sphere inside the cube.
+      const maxCornerRadius = mini.half * .72;
+      const maxPlanarRadius = Math.sqrt(Math.max(0, maxCornerRadius ** 2 - halfDepth ** 2));
+      const halfWidth = Math.min(
+        mini.half * LABEL_PLANE_WIDTH_RATIO * .5,
+        maxPlanarRadius / Math.hypot(1, 1 / labelTexture.aspect)
+      );
+      return {
+        halfDepth,
+        halfWidth,
+        halfHeight: halfWidth / labelTexture.aspect
+      };
+    };
+
+    const appendMiniLabel = (vertices, mini, rotation, options = {}, faceZ = 0) => {
+      const labelTexture = getLabelTexture(mini.label);
+      const { halfWidth, halfHeight } = getMiniLabelDimensions(mini, labelTexture);
+      const offsetX = options.offsetX || 0;
+      const offsetY = options.offsetY || 0;
+      const corners = [
+        { x: -halfWidth, y: halfHeight, u: 0, v: 1 },
+        { x: -halfWidth, y: -halfHeight, u: 0, v: 0 },
+        { x: halfWidth, y: halfHeight, u: 1, v: 1 },
+        { x: halfWidth, y: -halfHeight, u: 1, v: 0 }
+      ];
+      const points = corners.map((corner) => ({
+        ...projectMiniLabelPoint(mini, rotation, corner.x, corner.y, faceZ, offsetX, offsetY),
+        u: corner.u,
+        v: corner.v
+      }));
+      const pushLabelVertex = (point) =>
+        vertices.push(point.x, point.y, point.depth, point.cameraDepth, point.u, point.v);
+      for (const index of [0, 1, 2, 2, 1, 3]) pushLabelVertex(points[index]);
+      return labelTexture;
+    };
+
+    const appendMiniLabelSideFaces = (vertices, mini, rotation, options, color, alpha) => {
+      const labelTexture = getLabelTexture(mini.label);
+      const { halfDepth, halfWidth, halfHeight } = getMiniLabelDimensions(mini, labelTexture);
+      const offsetX = options.offsetX || 0;
+      const offsetY = options.offsetY || 0;
+      const sideColor = getColor(color);
+      const projectRasterPoint = (x, y, z) => projectMiniLabelPoint(
+        mini,
+        rotation,
+        (x / labelTexture.width * 2 - 1) * halfWidth,
+        (1 - y / labelTexture.height * 2) * halfHeight,
+        z,
+        offsetX,
+        offsetY
+      );
+
+      for (const segment of labelTexture.sideSegments) {
+        appendPolygon(vertices, [
+          projectRasterPoint(segment.x1, segment.y1, -halfDepth),
+          projectRasterPoint(segment.x2, segment.y2, -halfDepth),
+          projectRasterPoint(segment.x2, segment.y2, halfDepth),
+          projectRasterPoint(segment.x1, segment.y1, halfDepth)
+        ], sideColor, alpha);
+      }
     };
 
     const rebuildApertures = () => {
@@ -2098,15 +2309,39 @@
       gl.uniform2f(resolutionUniforms.get(program), viewport.width, viewport.height);
     };
 
+    const drawMiniLabel = (mini, rotation, options, color, alpha, sideVertices) => {
+      const labelTexture = getLabelTexture(mini.label);
+      const { halfDepth } = getMiniLabelDimensions(mini, labelTexture);
+      const labelColor = getColor(color);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.bindVertexArray(labelVertexArray);
+      useResolution(labelProgram);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, labelTexture.texture);
+      gl.uniform1i(labelSamplerUniform, 0);
+      gl.uniform3f(labelColorUniform, labelColor[0], labelColor[1], labelColor[2]);
+      gl.uniform1f(labelAlphaUniform, clamp(alpha, 0, 1));
+      for (const faceZ of [halfDepth, -halfDepth]) {
+        labelVertices.reset();
+        appendMiniLabel(labelVertices, mini, rotation, options, faceZ);
+        uploadDynamicBuffer(labelBuffer, labelVertices);
+        gl.drawArrays(gl.TRIANGLES, 0, labelVertices.length / LABEL_STRIDE);
+      }
+      appendMiniLabelSideFaces(sideVertices, mini, rotation, options, '#398d83', alpha);
+    };
+
     const render = (time, frameSeed) => {
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.CULL_FACE);
       gl.disable(gl.BLEND);
+      gl.depthMask(true);
+      gl.clearDepth(1);
       gl.enable(gl.STENCIL_TEST);
       gl.clearColor(5 / 255, 5 / 255, 14 / 255, 1);
       gl.clearStencil(0);
-      gl.clear(gl.COLOR_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
 
       gl.bindVertexArray(apertureVertexArray);
       useResolution(backgroundProgram);
@@ -2146,6 +2381,7 @@
         gl.drawArrays(gl.POINTS, 0, starVertices.length / POINT_STRIDE);
       }
 
+      faceVertices.reset();
       geometryVertices.reset();
       for (const mini of app.minis) {
         const bayState = bulkheadState.bays[mini.index];
@@ -2154,7 +2390,7 @@
         const unlockHighlight = feedback.intensity > .02;
         const rotation = createRotationCache(mini.rotation);
         if (glitch.active) {
-          appendCube(geometryVertices, mini, {
+          appendCube(faceVertices, geometryVertices, mini, {
             wireOnly: true,
             edgeColor: GLITCH_MAGENTA,
             edgeAlpha: .84 * glitch.intensity,
@@ -2163,7 +2399,7 @@
             vertexJitter: .075 * glitch.intensity,
             seed: frameSeed + mini.index * 9
           }, rotation);
-          appendCube(geometryVertices, mini, {
+          appendCube(faceVertices, geometryVertices, mini, {
             wireOnly: true,
             edgeColor: GLITCH_CYAN,
             edgeAlpha: .88 * glitch.intensity,
@@ -2173,16 +2409,65 @@
             seed: frameSeed + mini.index * 11 + 29
           }, rotation);
         }
-        mini.hit = appendCube(geometryVertices, mini, {
+        mini.hit = appendCube(faceVertices, geometryVertices, mini, {
           vertexJitter: glitch.active ? .06 * glitch.intensity : 0,
           seed: frameSeed + mini.index,
           edgeAlpha: unlockHighlight ? 1.18 + feedback.intensity * .22 : hovered ? 1.35 : .92,
           edgeColor: unlockHighlight ? feedback.color : hovered ? '#ffffff' : EDGE_COLOR,
           faceOutlineColor: unlockHighlight ? feedback.color : VECTOR_COLOR,
           faceOutlineOpacity: unlockHighlight ? 1.02 + feedback.intensity * .16 : hovered ? 1.18 : .82,
-          fillAlpha: unlockHighlight ? 1.02 + feedback.intensity * .14 : hovered ? 1.16 : .88,
+          fillAlpha: unlockHighlight ? 1.02 + feedback.intensity * .14 : hovered ? 1.16 : .88
         }, rotation);
       }
+
+      if (faceVertices.length) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
+        gl.bindVertexArray(geometryVertexArray);
+        uploadDynamicBuffer(geometryBuffer, faceVertices);
+        useResolution(geometryProgram);
+        gl.drawArrays(gl.TRIANGLES, 0, faceVertices.length / GEOMETRY_STRIDE);
+        gl.depthMask(true);
+      }
+
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
+      labelSideVertices.reset();
+      for (const mini of app.minis) {
+        const motion = mini.labelMotion;
+        const glitchRotation = mini.labelGlitchRotation;
+        const glitchIntensity = glitch.active ? glitch.intensity : 0;
+        const labelRotation = createRotationCache({
+          x: Math.sin(time * motion.xRate + motion.xPhase) * motion.xAmplitude +
+            glitchRotation.x * glitchIntensity,
+          y: Math.sin(time * motion.yRate + motion.yPhase) * motion.yAmplitude +
+            glitchRotation.y * glitchIntensity,
+          z: Math.sin(time * motion.zRate + motion.zPhase) * motion.zAmplitude +
+            glitchRotation.z * glitchIntensity
+        });
+        if (glitch.active) {
+          drawMiniLabel(mini, labelRotation, {
+            offsetX: -4.5 * glitch.intensity,
+            offsetY: .8 * glitch.intensity
+          }, GLITCH_MAGENTA, .84 * glitch.intensity, labelSideVertices);
+          drawMiniLabel(mini, labelRotation, {
+            offsetX: 4.5 * glitch.intensity,
+            offsetY: -.8 * glitch.intensity
+          }, GLITCH_CYAN, .88 * glitch.intensity, labelSideVertices);
+        }
+        drawMiniLabel(mini, labelRotation, {}, EDGE_COLOR, .92, labelSideVertices);
+      }
+
+      if (labelSideVertices.length) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.bindVertexArray(geometryVertexArray);
+        uploadDynamicBuffer(geometryBuffer, labelSideVertices);
+        useResolution(geometryProgram);
+        gl.drawArrays(gl.TRIANGLES, 0, labelSideVertices.length / GEOMETRY_STRIDE);
+      }
+
       if (geometryVertices.length) {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -2553,6 +2838,7 @@
       column,
       row,
       depth,
+      label: navItems[index].label,
       href: navItems[index].href,
       position: vec(),
       aperture: null,
@@ -2570,6 +2856,18 @@
         y: randomBetween(-1.05, 1.05),
         z: randomBetween(-.44, .44)
       },
+      labelMotion: {
+        xPhase: randomBetween(0, TAU),
+        yPhase: randomBetween(0, TAU),
+        zPhase: randomBetween(0, TAU),
+        xRate: randomBetween(.0002, .00038),
+        yRate: randomBetween(.00022, .0004),
+        zRate: randomBetween(.00018, .00034),
+        xAmplitude: randomBetween(.09, .15),
+        yAmplitude: randomBetween(.12, .2),
+        zAmplitude: randomBetween(.04, .085)
+      },
+      labelGlitchRotation: vec(),
       velocity: { ...velocityTarget },
       velocityTarget,
       rotationBoost: null,
@@ -2646,6 +2944,11 @@
         startedAt: time,
         duration: randomBetween(1050, 1650),
         burstVelocity
+      };
+      mini.labelGlitchRotation = {
+        x: randomSigned(.4, .95),
+        y: randomSigned(2.6, 3.05),
+        z: randomSigned(.3, .8)
       };
     }
   }
