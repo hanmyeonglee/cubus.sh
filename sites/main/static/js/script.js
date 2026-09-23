@@ -48,7 +48,8 @@
   const TAU = Math.PI * 2;
   const CAMERA_Z = 7.8;
   const CAMERA_FOCAL = 6.7;
-  const MINI_GRID_HALF = .34 * .85;
+  const MINI_FRAME_FILL_RATIO = .86;
+  const MINI_CUBE_SCALE = .8;
   const FACE_ARROW_GAP = .26;
   const FACE_ARROW_REACH = .70;
   const EDGE_COLOR = '#f4ffff';
@@ -396,6 +397,17 @@
     const framedEdge = getApertureFramePadding(size) + BUNKER_APERTURE_FRAME_STROKE_HALF;
     const platedEdge = getAperturePlatePadding(size) + BUNKER_APERTURE_PLATE_STROKE_HALF;
     return Math.max(framedEdge, platedEdge);
+  }
+
+  function getMiniCubeHalfForFrame(mini, frameSize) {
+    const cameraDepth = CAMERA_Z - mini.depth;
+    const centerExtent = Math.max(Math.abs(mini.position.x), Math.abs(mini.position.y));
+    const projectedCornerFactor = 2 * viewport.scale * CAMERA_FOCAL *
+      Math.hypot(cameraDepth, centerExtent);
+    const fill = MINI_FRAME_FILL_RATIO * frameSize;
+    const cornerRadius = fill * cameraDepth * cameraDepth /
+      (projectedCornerFactor + fill * cameraDepth);
+    return cornerRadius / Math.sqrt(3) * MINI_CUBE_SCALE;
   }
 
   function getApertureOuterBounds(aperture) {
@@ -2825,7 +2837,7 @@
       shutterGradients: { top: null, bottom: null },
       shutterSprites: null,
       renderGeometry: createCubeRenderGeometry(),
-      half: MINI_GRID_HALF,
+      half: 0,
       rotation: {
         x: randomBetween(-.72, .72),
         y: randomBetween(-1.05, 1.05),
@@ -2872,6 +2884,10 @@
         height: apertureSize,
         cut: apertureCut
       };
+      // Bound every rotated cube corner to the configured fraction of the frame's outer width.
+      const frameSize = apertureSize +
+        2 * (getApertureFramePadding(apertureSize) + BUNKER_APERTURE_FRAME_STROKE_HALF);
+      mini.half = getMiniCubeHalfForFrame(mini, frameSize);
       mini.apertureHitPoints = getBunkerAperturePoints(mini.aperture, BUNKER_APERTURE_HIT_INSET);
       mini.apertureFxGeometry = createApertureFxGeometry(mini.aperture);
       mini.bunkerRenderBounds = getBunkerBayRenderBounds(mini.aperture);
