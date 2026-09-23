@@ -50,8 +50,6 @@
   const CAMERA_FOCAL = 6.7;
   const MINI_FRAME_FILL_RATIO = .86;
   const MINI_CUBE_SCALE = .8;
-  const FACE_ARROW_GAP = .26;
-  const FACE_ARROW_REACH = .70;
   const EDGE_COLOR = '#f4ffff';
   const VECTOR_COLOR = '#51f7d1';
   const FACE_COLOR = '#07121a';
@@ -60,14 +58,14 @@
   const FONT_STACK = '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace';
 
   const navItems = [
-    { label: 'ABOUT',    href: 'https://about.cubus.sh' },
-    { label: '???',      href: '#undefined' },
-    { label: '???',      href: '#undefined' },
-    { label: '???',      href: '#undefined' },
-    { label: '???',      href: '#undefined' },
-    { label: '???',      href: '#undefined' },
-    { label: '???',      href: '#undefined' },
-    { label: '???',      href: '#undefined' }
+    { href: 'https://about.cubus.sh' },
+    { href: '#undefined' },
+    { href: '#undefined' },
+    { href: '#undefined' },
+    { href: '#undefined' },
+    { href: '#undefined' },
+    { href: '#undefined' },
+    { href: '#undefined' }
   ];
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -276,9 +274,6 @@
     centerX: window.innerWidth / 2,
     centerY: window.innerHeight / 2,
     scale: Math.min(window.innerWidth, window.innerHeight) * .30,
-    labelUnit: 1,
-    labelSize: 11,
-    urlSize: 8,
     stars: [],
     visibleStars: []
   };
@@ -358,9 +353,6 @@
     viewport.centerX = viewport.width / 2;
     viewport.centerY = viewport.height / 2;
     viewport.scale = Math.min(viewport.width, viewport.height) * .30;
-    viewport.labelUnit = clamp(Math.min(viewport.width, viewport.height) / 600, .62, 1.18);
-    viewport.labelSize = clamp(11 * viewport.labelUnit, 8, 13);
-    viewport.urlSize = clamp(8 * viewport.labelUnit, 7, 10);
     canvas.width = pixelWidth;
     canvas.height = pixelHeight;
     canvas.style.width = `${viewport.width}px`;
@@ -1576,90 +1568,34 @@
     {
       id: 'bottom',
       normal: vec(0, -1, 0),
-      map: (u, v) => vec(u, -1, v),
       vertices: [0, 1, 5, 4]
     },
     {
       id: 'top',
       normal: vec(0, 1, 0),
-      map: (u, v) => vec(u, 1, v),
       vertices: [3, 7, 6, 2]
     },
     {
       id: 'front',
       normal: vec(0, 0, 1),
-      map: (u, v) => vec(u, v, 1),
       vertices: [4, 5, 6, 7]
     },
     {
       id: 'back',
       normal: vec(0, 0, -1),
-      map: (u, v) => vec(-u, v, -1),
       vertices: [1, 0, 3, 2]
     },
     {
       id: 'right',
       normal: vec(1, 0, 0),
-      map: (u, v) => vec(1, v, -u),
       vertices: [1, 5, 6, 2]
     },
     {
       id: 'left',
       normal: vec(-1, 0, 0),
-      map: (u, v) => vec(-1, v, u),
       vertices: [0, 3, 7, 4]
     }
   ];
-
-  const sideFaceChevrons = Array.from({ length: 3 }, (_, row) => {
-    const v = -.55 + row * .55;
-    return [[-.28, v - .13], [0, v + .13], [.28, v - .13]];
-  });
-
-  const faceTextureChevrons = {
-    bottom: [
-      [[-.20, FACE_ARROW_GAP], [0, FACE_ARROW_REACH], [.20, FACE_ARROW_GAP]],
-      [[-.20, -FACE_ARROW_GAP], [0, -FACE_ARROW_REACH], [.20, -FACE_ARROW_GAP]],
-      [[FACE_ARROW_GAP, -.20], [FACE_ARROW_REACH, 0], [FACE_ARROW_GAP, .20]],
-      [[-FACE_ARROW_GAP, -.20], [-FACE_ARROW_REACH, 0], [-FACE_ARROW_GAP, .20]]
-    ],
-    top: [
-      [[-.20, .66], [0, FACE_ARROW_GAP], [.20, .66]],
-      [[-.20, -.66], [0, -FACE_ARROW_GAP], [.20, -.66]],
-      [[-.66, -.20], [-FACE_ARROW_GAP, 0], [-.66, .20]],
-      [[.66, -.20], [FACE_ARROW_GAP, 0], [.66, .20]]
-    ]
-  };
-
-  function buildFaceTextureGeometry(face) {
-    const chevrons = faceTextureChevrons[face.id] || sideFaceChevrons;
-    const points = [];
-    const pointIndexes = new Map();
-    const segments = [];
-    const pointIndex = ([u, v]) => {
-      const point = face.map(u, v);
-      const key = `${point.x}:${point.y}:${point.z}`;
-      if (!pointIndexes.has(key)) {
-        pointIndexes.set(key, points.length);
-        points.push(point);
-      }
-      return pointIndexes.get(key);
-    };
-
-    for (const [start, tip, end] of chevrons) {
-      const startIndex = pointIndex(start);
-      const tipIndex = pointIndex(tip);
-      const endIndex = pointIndex(end);
-      segments.push([startIndex, tipIndex], [tipIndex, endIndex]);
-    }
-    return {
-      points,
-      segments,
-      projected: points.map(() => ({ x: 0, y: 0 }))
-    };
-  }
-
-  for (const face of faceDefs) face.textureGeometry = buildFaceTextureGeometry(face);
 
   function createCubeRenderGeometry(includeFaces = true) {
     const worldVertices = cubeVertices.map(() => vec());
@@ -1733,35 +1669,6 @@
     return target;
   }
 
-  function projectFaceTexturePoint(cube, localPoint, options, rotation, projected) {
-    let x = localPoint.x * cube.half;
-    let y = localPoint.y * cube.half;
-    let z = localPoint.z * cube.half;
-
-    const rotatedX = x * rotation.cosZ - y * rotation.sinZ;
-    const rotatedY = x * rotation.sinZ + y * rotation.cosZ;
-    x = rotatedX;
-    y = rotatedY;
-
-    const yawedX = x * rotation.cosY + z * rotation.sinY;
-    const yawedZ = -x * rotation.sinY + z * rotation.cosY;
-    x = yawedX;
-    z = yawedZ;
-
-    const pitchedY = y * rotation.cosX - z * rotation.sinX;
-    const pitchedZ = y * rotation.sinX + z * rotation.cosX;
-    y = pitchedY;
-    z = pitchedZ;
-
-    const worldX = cube.position.x + x;
-    const worldY = cube.position.y + y;
-    const worldZ = cube.position.z + z;
-    const depth = Math.max(.8, CAMERA_Z - worldZ);
-    const perspective = CAMERA_FOCAL / depth;
-    projected.x = viewport.centerX + worldX * viewport.scale * perspective + (options.offsetX || 0);
-    projected.y = viewport.centerY - worldY * viewport.scale * perspective + (options.offsetY || 0);
-  }
-
   function updateBounds(points, bounds) {
     let left = Infinity;
     let right = -Infinity;
@@ -1782,7 +1689,6 @@
   function createWebGL2Renderer(gl) {
     const GEOMETRY_STRIDE = 6;
     const POINT_STRIDE = 7;
-    const TEXTURE_STRIDE = 4;
     const colorCache = new Map();
 
     const compileShader = (type, source) => {
@@ -1908,36 +1814,13 @@
         outColor = vec4(v_color.rgb, v_color.a * coverage);
       }
     `;
-    const textureVertexShader = `#version 300 es
-      layout(location = 0) in vec2 a_position;
-      layout(location = 1) in vec2 a_uv;
-      uniform vec2 u_resolution;
-      out vec2 v_uv;
-      void main() {
-        vec2 clip = a_position / u_resolution * 2.0 - 1.0;
-        gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
-        v_uv = a_uv;
-      }
-    `;
-    const textureFragmentShader = `#version 300 es
-      precision mediump float;
-      uniform sampler2D u_texture;
-      in vec2 v_uv;
-      out vec4 outColor;
-      void main() { outColor = texture(u_texture, v_uv); }
-    `;
-
     const backgroundProgram = createProgram(positionVertexShader, backgroundFragmentShader);
     const geometryProgram = createProgram(geometryVertexShader, geometryFragmentShader);
     const pointProgram = createProgram(pointVertexShader, pointFragmentShader);
-    const textureProgram = createProgram(textureVertexShader, textureFragmentShader);
     const apertureBuffer = gl.createBuffer();
     const geometryBuffer = gl.createBuffer();
     const pointBuffer = gl.createBuffer();
-    const textureBuffer = gl.createBuffer();
-    const labelTexture = gl.createTexture();
     let apertureVertexCount = 0;
-    let labelSprites = [];
     const dynamicBufferCapacities = new Map();
 
     const createFloatBuilder = (initialCapacity) => ({
@@ -1966,7 +1849,6 @@
     });
     const starVertices = createFloatBuilder(1024);
     const geometryVertices = createFloatBuilder(65536);
-    const labelVertices = createFloatBuilder(512);
 
     const uploadDynamicBuffer = (buffer, vertices) => {
       gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
@@ -2012,36 +1894,13 @@
       { location: 1, size: 4, stride: POINT_STRIDE, offset: 2 },
       { location: 2, size: 1, stride: POINT_STRIDE, offset: 6 }
     ]);
-    const textureVertexArray = createVertexArray(textureBuffer, [
-      { location: 0, size: 2, stride: TEXTURE_STRIDE, offset: 0 },
-      { location: 1, size: 2, stride: TEXTURE_STRIDE, offset: 2 }
-    ]);
     const resolutionUniforms = new Map([
       [backgroundProgram, gl.getUniformLocation(backgroundProgram, 'u_resolution')],
       [geometryProgram, gl.getUniformLocation(geometryProgram, 'u_resolution')],
-      [pointProgram, gl.getUniformLocation(pointProgram, 'u_resolution')],
-      [textureProgram, gl.getUniformLocation(textureProgram, 'u_resolution')]
+      [pointProgram, gl.getUniformLocation(pointProgram, 'u_resolution')]
     ]);
     const backgroundPixelResolutionUniform = gl.getUniformLocation(backgroundProgram, 'u_pixelResolution');
     const pointDprUniform = gl.getUniformLocation(pointProgram, 'u_dpr');
-    const textureSamplerUniform = gl.getUniformLocation(textureProgram, 'u_texture');
-
-    gl.bindTexture(gl.TEXTURE_2D, labelTexture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA,
-      1,
-      1,
-      0,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      new Uint8Array([0, 0, 0, 0])
-    );
 
     const getColor = (hex) => {
       if (colorCache.has(hex)) return colorCache.get(hex);
@@ -2131,12 +1990,11 @@
         offsetX: 0,
         offsetY: 0,
         wireOnly: false,
-        textureAlpha: 1,
-        textureColor: VECTOR_COLOR,
         edgeColor: EDGE_COLOR,
         edgeAlpha: 1,
         edgeGlow: 1,
         faceOutlineColor: VECTOR_COLOR,
+        faceOutlineOpacity: 1,
         faceOutlineAlpha: .28,
         faceOutlineScale: 1,
         faceGlow: 0,
@@ -2188,32 +2046,10 @@
         appendPolygon(vertices, item.points, faceColor, faceAlpha);
       }
 
-      const textureColor = getColor(settings.textureColor);
       const outlineColor = getColor(settings.faceOutlineColor);
       for (const item of projectedFaces) {
-        const localAlpha = settings.textureAlpha * clamp(.24 + Math.max(0, item.facing) * .76, .2, 1);
-        const textureVisibility = clamp(.38 + item.facing * .62, .12, 1);
-        const textureAlpha = clamp(settings.textureAlpha * textureVisibility, 0, 1);
-        const textureGeometry = item.face.textureGeometry;
-        for (let index = 0; index < textureGeometry.points.length; index += 1) {
-          projectFaceTexturePoint(
-            cube,
-            textureGeometry.points[index],
-            settings,
-            rotation,
-            textureGeometry.projected[index]
-          );
-        }
-        for (const [from, to] of textureGeometry.segments) {
-          appendLine(
-            vertices,
-            textureGeometry.projected[from],
-            textureGeometry.projected[to],
-            Math.max(.72, cube.half * 2.15),
-            textureColor,
-            textureAlpha
-          );
-        }
+        const localAlpha = settings.faceOutlineOpacity *
+          clamp(.24 + Math.max(0, item.facing) * .76, .2, 1);
         appendPath(
           vertices,
           item.points,
@@ -2255,98 +2091,6 @@
       apertureVertexCount = vertices.length / 2;
       gl.bindBuffer(gl.ARRAY_BUFFER, apertureBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
-    };
-
-    const rebuildLabelAtlas = () => {
-      const atlas = document.createElement('canvas');
-      const measure = atlas.getContext('2d');
-      const dpr = viewport.dpr;
-      const horizontalPadding = Math.ceil(8 * viewport.labelUnit * dpr);
-      const verticalPadding = Math.ceil(4 * viewport.labelUnit * dpr);
-      const labelFont = `600 ${viewport.labelSize * dpr}px ${FONT_STACK}`;
-      const urlFont = `${viewport.urlSize * dpr}px ${FONT_STACK}`;
-      const definitions = app.minis.map((mini) => {
-        measure.font = labelFont;
-        const labelWidth = measure.measureText(mini.label).width;
-        measure.font = urlFont;
-        const urlWidth = measure.measureText(mini.href).width;
-        const labelCenterY = verticalPadding + viewport.labelSize * dpr * .5;
-        const urlCenterY = labelCenterY + 13 * viewport.labelUnit * dpr;
-        return {
-          width: Math.ceil(Math.max(labelWidth, urlWidth) + horizontalPadding * 2),
-          height: Math.ceil(urlCenterY + viewport.urlSize * dpr * .5 + verticalPadding),
-          labelCenterY,
-          urlCenterY
-        };
-      });
-      const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-      const requestedWidth = definitions.reduce((sum, definition) => sum + definition.width, 0);
-      const atlasWidth = Math.min(maxTextureSize, Math.max(1, requestedWidth));
-      let cursorX = 0;
-      let cursorY = 0;
-      let rowHeight = 0;
-      for (const definition of definitions) {
-        if (cursorX && cursorX + definition.width > atlasWidth) {
-          cursorX = 0;
-          cursorY += rowHeight;
-          rowHeight = 0;
-        }
-        definition.x = cursorX;
-        definition.y = cursorY;
-        cursorX += definition.width;
-        rowHeight = Math.max(rowHeight, definition.height);
-      }
-      atlas.width = atlasWidth;
-      atlas.height = Math.max(1, cursorY + rowHeight);
-      const context = atlas.getContext('2d');
-      context.textAlign = 'center';
-      context.textBaseline = 'middle';
-      labelSprites = definitions.map((definition, index) => {
-        const mini = app.minis[index];
-        const centerX = definition.x + definition.width / 2;
-        context.font = labelFont;
-        context.fillStyle = 'rgba(227, 255, 246, .78)';
-        context.shadowColor = 'rgba(0, 255, 102, .28)';
-        context.shadowBlur = 5 * dpr;
-        context.fillText(mini.label, centerX, definition.y + definition.labelCenterY);
-        context.font = urlFont;
-        context.fillStyle = 'rgba(0, 255, 102, .53)';
-        context.shadowBlur = 0;
-        context.fillText(mini.href, centerX, definition.y + definition.urlCenterY);
-        return {
-          width: definition.width / dpr,
-          height: definition.height / dpr,
-          labelCenterY: definition.labelCenterY / dpr,
-          u0: definition.x / atlas.width,
-          v0: definition.y / atlas.height,
-          u1: (definition.x + definition.width) / atlas.width,
-          v1: (definition.y + definition.height) / atlas.height
-        };
-      });
-      gl.bindTexture(gl.TEXTURE_2D, labelTexture);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
-    };
-
-    const appendLabel = (vertices, mini) => {
-      if (!mini.hit) return;
-      const sprite = labelSprites[mini.index];
-      if (!sprite) return;
-      const centerX = (mini.hit.bounds.left + mini.hit.bounds.right) / 2;
-      const labelY = mini.hit.bounds.bottom + 23 * viewport.labelUnit;
-      const left = centerX - sprite.width / 2;
-      const right = left + sprite.width;
-      const top = labelY - sprite.labelCenterY;
-      const bottom = top + sprite.height;
-      vertices.push(
-        left, top, sprite.u0, sprite.v0,
-        left, bottom, sprite.u0, sprite.v1,
-        right, top, sprite.u1, sprite.v0,
-        right, top, sprite.u1, sprite.v0,
-        left, bottom, sprite.u0, sprite.v1,
-        right, bottom, sprite.u1, sprite.v1
-      );
     };
 
     const useResolution = (program) => {
@@ -2435,9 +2179,8 @@
           edgeAlpha: unlockHighlight ? 1.18 + feedback.intensity * .22 : hovered ? 1.35 : .92,
           edgeColor: unlockHighlight ? feedback.color : hovered ? '#ffffff' : EDGE_COLOR,
           faceOutlineColor: unlockHighlight ? feedback.color : VECTOR_COLOR,
-          textureColor: unlockHighlight ? feedback.color : VECTOR_COLOR,
+          faceOutlineOpacity: unlockHighlight ? 1.02 + feedback.intensity * .16 : hovered ? 1.18 : .82,
           fillAlpha: unlockHighlight ? 1.02 + feedback.intensity * .14 : hovered ? 1.16 : .88,
-          textureAlpha: unlockHighlight ? 1.02 + feedback.intensity * .16 : hovered ? 1.18 : .82
         }, rotation);
       }
       if (geometryVertices.length) {
@@ -2449,20 +2192,6 @@
         gl.drawArrays(gl.TRIANGLES, 0, geometryVertices.length / GEOMETRY_STRIDE);
       }
 
-      labelVertices.reset();
-      for (const mini of app.minis) appendLabel(labelVertices, mini);
-      if (labelVertices.length) {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        gl.bindVertexArray(textureVertexArray);
-        uploadDynamicBuffer(textureBuffer, labelVertices);
-        useResolution(textureProgram);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, labelTexture);
-        gl.uniform1i(textureSamplerUniform, 0);
-        gl.drawArrays(gl.TRIANGLES, 0, labelVertices.length / TEXTURE_STRIDE);
-      }
-
       gl.bindVertexArray(null);
       gl.disable(gl.STENCIL_TEST);
     };
@@ -2470,7 +2199,6 @@
     return {
       resize() {
         rebuildApertures();
-        rebuildLabelAtlas();
       },
       render
     };
@@ -2825,7 +2553,6 @@
       column,
       row,
       depth,
-      label: navItems[index].label,
       href: navItems[index].href,
       position: vec(),
       aperture: null,
