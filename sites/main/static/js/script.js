@@ -2149,19 +2149,23 @@
       const edgeGlow = (
         settings.edgeColor === EDGE_COLOR ? Math.max(5, cube.half * 5.2) : Math.max(3, cube.half * 3)
       ) * settings.edgeGlow;
+      const appendCubeEdge = (from, to) => {
+        const midpointZ = (worldVertices[from].z + worldVertices[to].z) * .5;
+        const frontness = clamp((midpointZ - cube.position.z) / (cube.half || 1), -1, 1);
+        const frontAmount = (frontness + 1) * .5;
+        appendLineWithGlow(
+          edgeVertices,
+          projectedVertices[from],
+          projectedVertices[to],
+          edgeWidth * lerp(.78, 1.12, frontAmount),
+          edgeColor,
+          settings.edgeAlpha * lerp(.16, 1, frontAmount),
+          edgeGlow * lerp(.12, 1, frontAmount)
+        );
+      };
 
       if (settings.wireOnly) {
-        for (const [from, to] of cubeEdges) {
-          appendLineWithGlow(
-            edgeVertices,
-            projectedVertices[from],
-            projectedVertices[to],
-            edgeWidth,
-            edgeColor,
-            settings.edgeAlpha,
-            edgeGlow
-          );
-        }
+        for (const [from, to] of cubeEdges) appendCubeEdge(from, to);
         return null;
       }
 
@@ -2198,17 +2202,7 @@
         );
       }
 
-      for (const [from, to] of cubeEdges) {
-        appendLineWithGlow(
-          edgeVertices,
-          projectedVertices[from],
-          projectedVertices[to],
-          edgeWidth,
-          edgeColor,
-          settings.edgeAlpha,
-          edgeGlow
-        );
-      }
+      for (const [from, to] of cubeEdges) appendCubeEdge(from, to);
       updateBounds(projectedVertices, geometry.bounds);
       return geometry.hit;
     };
