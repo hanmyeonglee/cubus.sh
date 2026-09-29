@@ -50,10 +50,12 @@
   const CAMERA_FOCAL = 6.7;
   const LABEL_PLANE_WIDTH_RATIO = 1.15;
   const LABEL_THICKNESS_RATIO = .16;
+  const LABEL_CENTER_BACK_RATIO = .22;
   const DEPTH_NEAR = .1;
   const MINI_FRAME_FILL_RATIO = .86;
   const MINI_CUBE_SCALE = .8;
   const EDGE_COLOR = '#f4ffff';
+  const EDGE_OUTLINE_COLOR = '#08151b';
   const VECTOR_COLOR = '#51f7d1';
   const FACE_COLOR = '#07121a';
   const GLITCH_CYAN = '#00f0ff';
@@ -2092,6 +2094,14 @@
         appendLine(vertices, from, to, width + glow * 1.8, color, alpha * .055);
         appendLine(vertices, from, to, width + glow * .72, color, alpha * .12);
       }
+      appendLine(
+        vertices,
+        from,
+        to,
+        width + 1.6,
+        getColor(EDGE_OUTLINE_COLOR),
+        Math.min(1, alpha) * .78
+      );
       appendLine(vertices, from, to, width, color, alpha);
     };
 
@@ -2135,7 +2145,7 @@
       const worldVertices = transformedVertices(cube, settings, rotation, geometry.worldVertices);
       const projectedVertices = projectVertices(worldVertices, settings, geometry.projectedVertices);
       const edgeColor = getColor(settings.edgeColor);
-      const edgeWidth = Math.max(.8, cube.half * 1.35);
+      const edgeWidth = Math.max(1.1, cube.half * 1.35);
       const edgeGlow = (
         settings.edgeColor === EDGE_COLOR ? Math.max(5, cube.half * 5.2) : Math.max(3, cube.half * 3)
       ) * settings.edgeGlow;
@@ -2206,8 +2216,9 @@
     const projectMiniLabelPoint = (mini, rotation, localX, localY, localZ, offsetX, offsetY) => {
       const rotatedX = localX * rotation.cosZ - localY * rotation.sinZ;
       const rotatedY = localX * rotation.sinZ + localY * rotation.cosZ;
-      const yawedX = rotatedX * rotation.cosY + localZ * rotation.sinY;
-      const yawedZ = -rotatedX * rotation.sinY + localZ * rotation.cosY;
+      const centeredZ = localZ - mini.half * LABEL_CENTER_BACK_RATIO;
+      const yawedX = rotatedX * rotation.cosY + centeredZ * rotation.sinY;
+      const yawedZ = -rotatedX * rotation.sinY + centeredZ * rotation.cosY;
       const pitchedY = rotatedY * rotation.cosX - yawedZ * rotation.sinX;
       const pitchedZ = rotatedY * rotation.sinX + yawedZ * rotation.cosX;
       const worldX = mini.position.x + yawedX;
@@ -2226,7 +2237,7 @@
     const getMiniLabelDimensions = (mini, labelTexture) => {
       const halfDepth = mini.half * LABEL_THICKNESS_RATIO * .5;
       // Bound the full extruded glyph to a sphere inside the cube.
-      const maxCornerRadius = mini.half * .72;
+      const maxCornerRadius = mini.half * .62;
       const maxPlanarRadius = Math.sqrt(Math.max(0, maxCornerRadius ** 2 - halfDepth ** 2));
       const halfWidth = Math.min(
         mini.half * LABEL_PLANE_WIDTH_RATIO * .5,
@@ -2448,12 +2459,12 @@
         });
         if (glitch.active) {
           drawMiniLabel(mini, labelRotation, {
-            offsetX: -4.5 * glitch.intensity,
-            offsetY: .8 * glitch.intensity
+            offsetX: -2.4 * glitch.intensity,
+            offsetY: .4 * glitch.intensity
           }, GLITCH_MAGENTA, .84 * glitch.intensity, labelSideVertices);
           drawMiniLabel(mini, labelRotation, {
-            offsetX: 4.5 * glitch.intensity,
-            offsetY: -.8 * glitch.intensity
+            offsetX: 2.4 * glitch.intensity,
+            offsetY: -.4 * glitch.intensity
           }, GLITCH_CYAN, .88 * glitch.intensity, labelSideVertices);
         }
         drawMiniLabel(mini, labelRotation, {}, EDGE_COLOR, .92, labelSideVertices);
@@ -2946,9 +2957,9 @@
         burstVelocity
       };
       mini.labelGlitchRotation = {
-        x: randomSigned(.4, .95),
-        y: randomSigned(2.6, 3.05),
-        z: randomSigned(.3, .8)
+        x: randomSigned(.18, .34),
+        y: randomSigned(.55, .85),
+        z: randomSigned(.12, .24)
       };
     }
   }
