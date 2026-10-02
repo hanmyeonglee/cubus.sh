@@ -76,7 +76,7 @@ services:
 
   skunor-bot:
     build:
-      context: ./sites/skunor-bot.cubus.sh
+      context: ./sites/skunor-bot
       dockerfile: Dockerfile
     restart: unless-stopped
     init: true
