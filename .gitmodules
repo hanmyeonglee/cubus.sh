@@ -1,6 +1,8 @@
 [submodule "sites/simprob"]
 	path = sites/simprob
 	url = https://github.com/hanmyeonglee/simprob.cubus.sh.git
+	branch = main
 [submodule "sites/skunor-bot"]
 	path = sites/skunor-bot
 	url = https://github.com/hanmyeonglee/skunor-bot.git
+	branch = main

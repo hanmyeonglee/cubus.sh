@@ -10,6 +10,8 @@ The main page of [cubus.sh](https://cubus.sh), served from `sites/main/`.
 4. In Cloudflare, route `cubus.sh` and each site's public hostname to `http://nginx-proxy:80`.
 5. Start the stack from the repository root with `docker compose up --build -d`.
 
+To advance submodule pointers to their latest `main` commits and commit and push the parent repository, run `./scripts/update-submodules-and-push.sh` from a clean checkout with push access. Deployment servers should use `./scripts/pull-with-submodules.sh` to check out the hashes recorded by the parent.
+
 The root Compose stack runs the main static site, `simprobs`, `skunor-bot`, `nginx-proxy`, and `cloudflared`. Each site keeps its own Dockerfile and source in its repository; the root Compose file registers the site service and builds from that submodule. Compose loads bot credentials from `sites/skunor-bot/.env`; the root `.env` is reserved for infrastructure settings such as the tunnel token. `skunor-bot` has no public ingress: it uses a separate egress bridge for Discord and Codex connections and a named volume for its database and Codex login state. Add one service entry to the root Compose file for each new site. Keep `.env` out of Git.
 
 After starting the stack, mention the bot in its configured Discord server and use `/login` to authorize the Codex account. The bot's data and login state persist in the `skunor-bot-data` volume.
