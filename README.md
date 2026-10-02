@@ -5,10 +5,10 @@ The main page of [cubus.sh](https://cubus.sh), served from `sites/main/`.
 ## Deploy
 
 1. Copy `.env.example` to `.env` and set `TUNNEL_TOKEN` to the token for a remotely managed Cloudflare Tunnel. Leave `TUNNEL_PROTOCOL=auto` unless UDP port 7844 is known to be available.
-2. In Cloudflare, route the public hostname `cubus.sh` to `http://nginx-proxy:80`.
-3. Run `docker compose up --build -d`.
+2. In Cloudflare, route `cubus.sh` and each site's public hostname to `http://nginx-proxy:80`.
+3. After cloning, use `git clone --recurse-submodules`. For an existing checkout, run `git submodule sync --recursive && git submodule update --init --recursive` after pulling. Then start the stack from the repository root with `docker compose up --build -d`.
 
-The Compose stack runs the main static site, `nginx-proxy`, and `cloudflared`. It does not publish ports on the host; Cloudflare Tunnel connects to the proxy over the private Docker network. Keep `.env` out of Git.
+The root Compose stack runs the main static site, `simprobs`, `nginx-proxy`, and `cloudflared`. Each site keeps its own Dockerfile and source in its repository; the root Compose file registers the site service and builds from that submodule. Add one service entry to the root Compose file for each new site. Keep `.env` out of Git.
 
 The `tunnel` Docker network uses `172.30.0.0/24` so nginx can trust `CF-Connecting-IP` only from that network. Check that this subnet does not overlap a host, VPN, or existing Docker network before the first deployment. Changing an existing deployment to this subnet requires the Compose network to be recreated.
 
