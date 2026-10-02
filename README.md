@@ -4,7 +4,7 @@ The main page of [cubus.sh](https://cubus.sh), served from `sites/main/`.
 
 ## Deploy
 
-1. Clone with `git clone --recurse-submodules`. For an existing checkout, run `git submodule sync --recursive && git submodule update --init --recursive` after pulling.
+1. Clone with `git clone --recurse-submodules`. For an existing checkout, run `./scripts/pull-with-submodules.sh` to pull and update every submodule to the commit recorded by the parent repository.
 2. Copy `.env.example` to `.env` and set `TUNNEL_TOKEN` to the token for a remotely managed Cloudflare Tunnel. Leave `TUNNEL_PROTOCOL=auto` unless UDP port 7844 is known to be available.
 3. Copy `sites/skunor-bot/.env.example` to `sites/skunor-bot/.env` and set `DISCORD_TOKEN` and `ALLOWED_GUILD_ID` for the Discord bot.
 4. In Cloudflare, route `cubus.sh` and each site's public hostname to `http://nginx-proxy:80`.
