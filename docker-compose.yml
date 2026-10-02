@@ -81,14 +81,13 @@ services:
     restart: unless-stopped
     init: true
     stop_grace_period: 60s
+    env_file:
+      - ./sites/skunor-bot/.env
     environment:
-      DISCORD_TOKEN: "${DISCORD_TOKEN:?Set DISCORD_TOKEN in .env}"
-      ALLOWED_GUILD_ID: "${ALLOWED_GUILD_ID:?Set ALLOWED_GUILD_ID in .env}"
       DATABASE_PATH: /data/bot.sqlite3
       CODEX_HOME: /data/codex
       HOST: 0.0.0.0
       PORT: "8080"
-      EXCEED_MESSAGE: "${EXCEED_MESSAGE:-}"
     volumes:
       - skunor-bot-data:/data
     healthcheck:

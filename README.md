@@ -4,11 +4,13 @@ The main page of [cubus.sh](https://cubus.sh), served from `sites/main/`.
 
 ## Deploy
 
-1. Copy `.env.example` to `.env` and set `TUNNEL_TOKEN` to the token for a remotely managed Cloudflare Tunnel. Set `DISCORD_TOKEN` and `ALLOWED_GUILD_ID` for the Discord bot. Leave `TUNNEL_PROTOCOL=auto` unless UDP port 7844 is known to be available.
-2. In Cloudflare, route `cubus.sh` and each site's public hostname to `http://nginx-proxy:80`.
-3. After cloning, use `git clone --recurse-submodules`. For an existing checkout, run `git submodule sync --recursive && git submodule update --init --recursive` after pulling. Then start the stack from the repository root with `docker compose up --build -d`.
+1. Clone with `git clone --recurse-submodules`. For an existing checkout, run `git submodule sync --recursive && git submodule update --init --recursive` after pulling.
+2. Copy `.env.example` to `.env` and set `TUNNEL_TOKEN` to the token for a remotely managed Cloudflare Tunnel. Leave `TUNNEL_PROTOCOL=auto` unless UDP port 7844 is known to be available.
+3. Copy `sites/skunor-bot/.env.example` to `sites/skunor-bot/.env` and set `DISCORD_TOKEN` and `ALLOWED_GUILD_ID` for the Discord bot.
+4. In Cloudflare, route `cubus.sh` and each site's public hostname to `http://nginx-proxy:80`.
+5. Start the stack from the repository root with `docker compose up --build -d`.
 
-The root Compose stack runs the main static site, `simprobs`, `skunor-bot`, `nginx-proxy`, and `cloudflared`. Each site keeps its own Dockerfile and source in its repository; the root Compose file registers the site service and builds from that submodule. `skunor-bot` has no public ingress: it uses a separate egress bridge for Discord and Codex connections and a named volume for its database and Codex login state. Add one service entry to the root Compose file for each new site. Keep `.env` out of Git.
+The root Compose stack runs the main static site, `simprobs`, `skunor-bot`, `nginx-proxy`, and `cloudflared`. Each site keeps its own Dockerfile and source in its repository; the root Compose file registers the site service and builds from that submodule. Compose loads bot credentials from `sites/skunor-bot/.env`; the root `.env` is reserved for infrastructure settings such as the tunnel token. `skunor-bot` has no public ingress: it uses a separate egress bridge for Discord and Codex connections and a named volume for its database and Codex login state. Add one service entry to the root Compose file for each new site. Keep `.env` out of Git.
 
 After starting the stack, mention the bot in its configured Discord server and use `/login` to authorize the Codex account. The bot's data and login state persist in the `skunor-bot-data` volume.
 
