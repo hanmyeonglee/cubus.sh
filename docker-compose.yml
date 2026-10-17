@@ -122,6 +122,7 @@ services:
       start_period: 5s
     logging: *default-logging
     networks:
+      - web
       - web-external
 
   cloudflared:
