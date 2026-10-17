@@ -6,3 +6,6 @@
 	path = sites/skunor-bot
 	url = https://github.com/hanmyeonglee/skunor-bot.git
 	branch = main
+[submodule "sites/audown"]
+	path = sites/audown
+	url = https://github.com/hanmyeonglee/audown.cubus.sh
