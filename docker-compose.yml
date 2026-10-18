@@ -125,6 +125,40 @@ services:
       - web
       - web-external
 
+  choice:
+    build:
+      context: ./sites/choice
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./sites/choice/.env
+    environment:
+      VIRTUAL_HOST: choice.cubus.sh
+      VIRTUAL_PORT: "8000"
+      DEVICE: cuda
+    expose:
+      - "8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/healthz', timeout=3).close()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging: *default-logging
+    networks:
+      - web
+
   cloudflared:
     image: cloudflare/cloudflared:2026.9.1
     restart: unless-stopped

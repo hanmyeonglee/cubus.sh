@@ -9,3 +9,7 @@
 [submodule "sites/audown"]
 	path = sites/audown
 	url = https://github.com/hanmyeonglee/audown.cubus.sh
+[submodule "sites/choice"]
+	path = sites/choice
+	url = https://github.com/hanmyeonglee/choice.cubus.sh.git
+	branch = main
