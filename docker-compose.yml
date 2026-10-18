@@ -21,6 +21,7 @@ services:
       - /var/run/docker.sock:/tmp/docker.sock:ro
       - ./config/proxy-real-ip.conf:/etc/nginx/conf.d/00-real-ip.conf:ro
       - ./config/proxy-fallback.conf:/etc/nginx/conf.d/zz-fallback.conf:ro
+      - ./config/vhost.d:/etc/nginx/vhost.d:ro
     expose:
       - "80"
     healthcheck:
