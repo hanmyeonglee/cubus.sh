@@ -8,7 +8,9 @@ x-logging: &default-logging
 
 services:
   nginx-proxy:
-    image: nginxproxy/nginx-proxy:1.11-alpine
+    build:
+      context: ./config
+      dockerfile: nginx-proxy.Dockerfile
     restart: unless-stopped
     environment:
       DEFAULT_ROOT: "404"
