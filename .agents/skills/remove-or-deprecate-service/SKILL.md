@@ -2,9 +2,9 @@
 name: remove-or-deprecate-service
 description: >-
   Cleanly remove a submodule service from cubus.sh (git submodule, root compose,
-  vhost config, and README) and optionally mark its standalone repository under
-  .repos/ as deprecated. Use when retiring, removing, or deprecating a site or
-  service from cubus.sh.
+  vhost config, and README), optionally mark its standalone repository under
+  .repos/ as deprecated, and document safe PostgreSQL retention or manual purge.
+  Use when retiring, removing, or deprecating a site or service from cubus.sh.
 ---
 
 # Remove or Deprecate Service
@@ -39,7 +39,7 @@ Use this skill when removing a submodule service from `cubus.sh` or retiring it 
 ### 3. Clean up root routing and infrastructure
 
 1. Remove the service block from root `docker-compose.yml`.
-2. Remove any top-level `networks:` or `volumes:` entries in root `docker-compose.yml` that were used exclusively by this service. Keep shared `tunnel`, `web`, and any network still referenced by remaining services.
+2. Remove any top-level `networks:` or `volumes:` entries in root `docker-compose.yml` that were used exclusively by this service. **Always keep shared platform resources:** `tunnel`, `web`, `db`, and `postgres-data` (even if no active subdomain currently uses `db`).
 3. Remove any host-specific proxy override files under `config/vhost.d/<hostname>*`.
 
 ### 4. Update documentation
@@ -52,7 +52,28 @@ Use this skill when removing a submodule service from `cubus.sh` or retiring it 
    (Match the language of that repository's existing `README.md`.)
 2. Remove the service row from the **Subdomains** table in root `README.md`, and add or update a concise one-line deprecation note if requested.
 
-### 5. Verify
+### 5. Database retention & optional manual cleanup
+
+- **Default policy:** `db-broker` never auto-drops databases or roles; the retired service's PostgreSQL database (`svc_<normalized>`) is preserved by default.
+- If the user explicitly wants to purge the retired service's database on the server, follow this exact order (never delete `db_broker.credentials` before removing the running container, or it will re-provision on restart):
+  1. Deploy the updated `docker-compose.yml` without the service so no container can reconnect:
+     ```sh
+     docker compose up -d --remove-orphans
+     ```
+  2. Take a final backup:
+     ```sh
+     umask 077 && docker compose exec -T postgres pg_dump -U postgres -Fc "svc_<normalized>" > svc_<normalized>.dump
+     ```
+  3. Drop the database, role, and broker credential row:
+     ```sh
+     docker compose exec -T postgres psql -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+     DROP DATABASE IF EXISTS "svc_<normalized>" WITH (FORCE);
+     DROP ROLE IF EXISTS "svc_<normalized>";
+     DELETE FROM db_broker.credentials WHERE service_name = '<service>';
+     SQL
+     ```
+
+### 6. Verify
 
 1. Validate root `docker-compose.yml` YAML syntax and confirm no dangling references remain:
    ```sh

@@ -3,7 +3,8 @@
 
 # ------------------------------------------------------------------------------
 # 1. .repos/<repo>/compose.service.yml
-#    Owned by the service repository. No host ports, VIRTUAL_HOST, or parent networks.
+#    Owned by the service repository. No host ports, VIRTUAL_HOST, DB_BROKER_URL,
+#    parent networks, or parent depends_on.
 # ------------------------------------------------------------------------------
 services:
   <service>:
@@ -26,6 +27,8 @@ services:
 # ------------------------------------------------------------------------------
 # 2. .repos/<repo>/docker-compose.yml
 #    Standalone local wrapper binding loopback only.
+#    If the service uses PostgreSQL, include a local postgres:18.7-alpine3.24
+#    container (mounted at /var/lib/postgresql) and pass DATABASE_URL directly.
 # ------------------------------------------------------------------------------
 # services:
 #   <service>:
@@ -34,10 +37,35 @@ services:
 #       service: <service>
 #     ports:
 #       - "127.0.0.1:<port>:<port>"
+#     # Optional local PostgreSQL wiring for standalone development:
+#     # environment:
+#     #   DATABASE_URL: postgresql://dev:dev@postgres:5432/dev?sslmode=disable
+#     # depends_on:
+#     #   postgres:
+#     #     condition: service_healthy
+#   # postgres:
+#   #   image: postgres:18.7-alpine3.24
+#   #   environment:
+#   #     POSTGRES_USER: dev
+#   #     POSTGRES_PASSWORD: dev
+#   #     POSTGRES_DB: dev
+#   #     POSTGRES_INITDB_ARGS: "--locale-provider=builtin --locale=C.UTF-8 --encoding=UTF8"
+#   #   volumes:
+#   #     - pgdata:/var/lib/postgresql
+#   #   healthcheck:
+#   #     test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "dev", "-d", "dev"]
+#   #     interval: 5s
+#   #     timeout: 3s
+#   #     retries: 10
+# # volumes:
+# #   pgdata:
 
 # ------------------------------------------------------------------------------
 # 3. Root docker-compose.yml (cubus.sh)
-#    Subdomain wiring only. Add `web-external` ONLY if runtime outbound internet is needed.
+#    Subdomain & platform wiring only.
+#    - Add `web-external` ONLY if runtime outbound internet is needed.
+#    - Add `db` network, `DB_BROKER_URL`, and `depends_on: db-broker` (WITHOUT
+#      `restart: true`) ONLY if the service uses the internal PostgreSQL platform.
 # ------------------------------------------------------------------------------
 #   <service>:
 #     extends:
@@ -47,6 +75,11 @@ services:
 #     environment:
 #       VIRTUAL_HOST: <host>.cubus.sh
 #       VIRTUAL_PORT: "<port>"
+#       # DB_BROKER_URL: http://db-broker:8080/v1/database
+#     # depends_on:
+#     #   db-broker:
+#     #     condition: service_healthy
 #     logging: *default-logging
 #     networks:
 #       - web
+#       # - db

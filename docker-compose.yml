@@ -108,6 +108,71 @@ services:
     networks:
       - tunnel
 
+  postgres:
+    image: postgres:18.7-alpine3.24
+    restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+    shm_size: 256m
+    stop_grace_period: 30s
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+      POSTGRES_INITDB_ARGS: "--locale-provider=builtin --locale=C.UTF-8 --encoding=UTF8"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "postgres", "-d", "postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    logging: *default-logging
+    networks:
+      - db
+
+  db-broker:
+    build:
+      context: ./infra/db-broker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LISTEN_ADDR: ":8080"
+      DOCKER_SOCKET: "/var/run/docker.sock"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "postgres"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+      ROLE_CONNECTION_LIMIT: "15"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD", "/db-broker", "-healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    logging: *default-logging
+    networks:
+      - db
+
 networks:
   tunnel:
     driver: bridge
@@ -119,3 +184,10 @@ networks:
     internal: true
   web-external:
     driver: bridge
+  db:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres-data:
+    driver: local
