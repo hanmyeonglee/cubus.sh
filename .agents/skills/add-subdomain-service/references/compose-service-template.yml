@@ -1,0 +1,52 @@
+# Reference templates for onboarding a subdomain service into cubus.sh.
+# Replace <service>, <slug>, <host>, and <port> with actual values.
+
+# ------------------------------------------------------------------------------
+# 1. .repos/<repo>/compose.service.yml
+#    Owned by the service repository. No host ports, VIRTUAL_HOST, or parent networks.
+# ------------------------------------------------------------------------------
+services:
+  <service>:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Uncomment if runtime .env is required (canonical syntax preserves relative path under extends):
+    # env_file:
+    #   - path: .env
+    #     required: true
+    expose:
+      - "<port>"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:<port>/"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+# ------------------------------------------------------------------------------
+# 2. .repos/<repo>/docker-compose.yml
+#    Standalone local wrapper binding loopback only.
+# ------------------------------------------------------------------------------
+# services:
+#   <service>:
+#     extends:
+#       file: compose.service.yml
+#       service: <service>
+#     ports:
+#       - "127.0.0.1:<port>:<port>"
+
+# ------------------------------------------------------------------------------
+# 3. Root docker-compose.yml (cubus.sh)
+#    Subdomain wiring only. Add `web-external` ONLY if runtime outbound internet is needed.
+# ------------------------------------------------------------------------------
+#   <service>:
+#     extends:
+#       file: ./sites/<slug>/compose.service.yml
+#       service: <service>
+#     restart: unless-stopped
+#     environment:
+#       VIRTUAL_HOST: <host>.cubus.sh
+#       VIRTUAL_PORT: "<port>"
+#     logging: *default-logging
+#     networks:
+#       - web
