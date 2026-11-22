@@ -86,6 +86,26 @@ services:
     networks:
       - web
 
+  artifact:
+    extends:
+      file: ./sites/artifact/compose.service.yml
+      service: artifact
+    restart: unless-stopped
+    environment:
+      VIRTUAL_HOST: artifact.cubus.sh
+      VIRTUAL_PORT: "8000"
+      PUBLIC_BASE_URL: "https://artifact.cubus.sh"
+      DB_BROKER_URL: "http://db-broker:8080/v1/database"
+      ADMIN_BIND_CIDR: "172.31.0.0/24"
+    depends_on:
+      db-broker:
+        condition: service_healthy
+    logging: *default-logging
+    networks:
+      - web
+      - db
+      - admin
+
   cloudflared:
     image: cloudflare/cloudflared:2026.9.1
     restart: unless-stopped
@@ -187,6 +207,12 @@ networks:
   db:
     driver: bridge
     internal: true
+  admin:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
 
 volumes:
   postgres-data:

@@ -39,7 +39,7 @@ Use this skill when removing a submodule service from `cubus.sh` or retiring it 
 ### 3. Clean up root routing and infrastructure
 
 1. Remove the service block from root `docker-compose.yml`.
-2. Remove any top-level `networks:` or `volumes:` entries in root `docker-compose.yml` that were used exclusively by this service. **Always keep shared platform resources:** `tunnel`, `web`, `db`, and `postgres-data` (even if no active subdomain currently uses `db`).
+2. Remove any top-level `networks:` or `volumes:` entries in root `docker-compose.yml` that were used exclusively by this service. **Always keep shared platform resources:** `tunnel`, `web`, `db`, `admin`, and `postgres-data` (even if no active subdomain currently uses `db` or `admin`).
 3. Remove any host-specific proxy override files under `config/vhost.d/<hostname>*`.
 
 ### 4. Update documentation

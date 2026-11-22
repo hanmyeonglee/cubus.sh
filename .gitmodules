@@ -9,3 +9,7 @@
 	path = sites/choice
 	url = https://github.com/hanmyeonglee/choice.cubus.sh.git
 	branch = main
+[submodule "sites/artifact"]
+	path = sites/artifact
+	url = https://github.com/hanmyeonglee/artifact.cubus.sh.git
+	branch = main

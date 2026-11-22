@@ -12,6 +12,7 @@ Each service owns its build, runtime, `.env`, and hardware requirements in its o
 | `simprob.cubus.sh` | `simprobs` | [`sites/simprob`](sites/simprob) ([README](sites/simprob/README.md)) |
 | `audown.cubus.sh` | `audown` | [`sites/audown`](sites/audown) ([README](sites/audown/README.md)) |
 | `choice.cubus.sh` | `choice` | [`sites/choice`](sites/choice) ([README](sites/choice/README.md)) |
+| `artifact.cubus.sh` | `artifact` | [`sites/artifact`](sites/artifact) ([README](sites/artifact/README.md)) |
 
 > `skunor-bot` is **deprecated** and has been removed from this repository's submodules and Compose stack.
 
@@ -39,7 +40,7 @@ Sub-repositories are developed on their own branches under gitignored `.repos/` 
 
 ## Operations Notes
 
-- **Tunnel subnet:** `tunnel` is pinned to `172.30.0.0/24` so `nginx-proxy` trusts `CF-Connecting-IP` only from `cloudflared`. Avoid overlapping host/VPN networks; changing it requires recreating the Compose network.
+- **Pinned subnets:** `tunnel` is pinned to `172.30.0.0/24` (so `nginx-proxy` trusts `CF-Connecting-IP` only from `cloudflared`) and internal `admin` is pinned to `172.31.0.0/24` (for service internal admin APIs). Avoid overlapping host/VPN networks; changing either subnet requires recreating the Compose network.
 - **HTTP/3 & IPv6:** Terminated at Cloudflare (enable HTTP/3 and IPv6 Compatibility in Cloudflare settings). Leave `TUNNEL_PROTOCOL=auto` unless outbound UDP/7844 is verified for forced `quic`.
 - **Database backup:** `umask 077 && docker compose exec -T postgres pg_dumpall -U postgres > backup.sql` (the dump includes `db_broker.credentials` tenant passwords; protect or encrypt it like `.env`).
 - **Superuser password rotation:** Run `ALTER USER postgres WITH PASSWORD '...'` inside `postgres` first, then update `POSTGRES_PASSWORD` in `.env` and recreate `db-broker`.
