@@ -1,27 +1,44 @@
 # cubus.sh
 
-The main page of [cubus.sh](https://cubus.sh), served from `sites/main/`.
+Cloudflare Tunnel and `nginx-proxy` routing stack for [cubus.sh](https://cubus.sh) and its subdomains.
+
+Each service owns its build, runtime, `.env`, and hardware requirements in its own repository (`compose.service.yml`); this repository only wires subdomain routing, networks, and proxy settings.
+
+## Subdomains
+
+| Host | Service | Source |
+| --- | --- | --- |
+| `cubus.sh` | `main` | [`sites/main`](sites/main) |
+| `simprob.cubus.sh` | `simprobs` | [`sites/simprob`](sites/simprob) ([README](sites/simprob/README.md)) |
+| `audown.cubus.sh` | `audown` | [`sites/audown`](sites/audown) ([README](sites/audown/README.md)) |
+| `choice.cubus.sh` | `choice` | [`sites/choice`](sites/choice) ([README](sites/choice/README.md)) |
+
+> `skunor-bot` is **deprecated** and has been removed from this repository's submodules and Compose stack.
 
 ## Deploy
 
-1. Clone with `git clone --recurse-submodules`. For an existing checkout, run `./scripts/pull-with-submodules.sh` to pull and update every submodule to the commit recorded by the parent repository.
-2. Copy `.env.example` to `.env` and set `TUNNEL_TOKEN` to the token for a remotely managed Cloudflare Tunnel. Leave `TUNNEL_PROTOCOL=auto` unless UDP port 7844 is known to be available.
-3. Copy `sites/skunor-bot/.env.example` to `sites/skunor-bot/.env` and set `DISCORD_TOKEN` and `ALLOWED_GUILD_ID` for the Discord bot.
-4. In Cloudflare, route `cubus.sh` and each site's public hostname to `http://nginx-proxy:80`.
-5. Start the stack from the repository root with `docker compose up --build -d`.
+**Prerequisites:** Docker Engine with Compose (v2.17+), a Cloudflare Tunnel routing each hostname above to `http://nginx-proxy:80`, and any service-specific prerequisites or `.env` files documented in each submodule's README.
 
-To advance submodule pointers to their latest `main` commits and commit and push the parent repository, run `./scripts/update-submodules-and-push.sh` from a clean checkout with push access. Deployment servers should use `./scripts/pull-with-submodules.sh` to check out the hashes recorded by the parent.
+```sh
+git clone --recurse-submodules https://github.com/hanmyeonglee/cubus.sh.git
+cd cubus.sh
+cp .env.example .env   # Set TUNNEL_TOKEN
+# Configure service .env files under sites/* per each submodule's README
+docker compose up --build -d
+```
 
-The root Compose stack runs the main static site, `simprobs`, `skunor-bot`, `nginx-proxy`, and `cloudflared`. Each site keeps its own Dockerfile and source in its repository; the root Compose file registers the site service and builds from that submodule. Compose loads bot credentials from `sites/skunor-bot/.env`; the root `.env` is reserved for infrastructure settings such as the tunnel token. `skunor-bot` has no public ingress: it uses a separate egress bridge for Discord and Codex connections and a named volume for its database and Codex login state. Add one service entry to the root Compose file for each new site. Keep `.env` out of Git.
+## Scripts
 
-After starting the stack, mention the bot in its configured Discord server and use `/login` to authorize the Codex account. The bot's data and login state persist in the `skunor-bot-data` volume.
+Sub-repositories are developed on their own branches under gitignored `.repos/` and deployed via Git submodules under `sites/`.
 
-The `tunnel` Docker network uses `172.30.0.0/24` so nginx can trust `CF-Connecting-IP` only from that network. Check that this subnet does not overlap a host, VPN, or existing Docker network before the first deployment. Changing an existing deployment to this subnet requires the Compose network to be recreated.
+| Script | Environment | Purpose |
+| --- | --- | --- |
+| `./scripts/setup-repos.sh` | Local dev (initial setup or after adding a submodule) | Clones all `.gitmodules` repos into `.repos/` on their branches, skipping existing ones. Matches `origin` protocol (SSH/HTTPS); override with `REPOS_PROTOCOL=ssh\|https`. |
+| `./scripts/update-submodules-and-push.sh` | Local dev (clean branch with push access) | Advances `sites/*` pointers to remote HEADs, commits, and pushes. Run after pushing changes from `.repos/*`. |
+| `./scripts/pull-with-submodules.sh` | Deployment server | Pulls the parent repo and checks out the exact submodule commits pinned by it. |
 
-The services use Docker's rotating `local` log driver. Each container retains at most five 10 MB log segments. Proxy access logs are emitted as JSON and include the virtual host, restored client IP, Cloudflare Ray ID, request time, and upstream response time.
+## Proxy Notes
 
-## HTTP/3 and IPv6
-
-Client-facing HTTP/3 and IPv6 terminate at Cloudflare, not at the nginx containers. Enable HTTP/3 under **Cloudflare > Speed > Settings > Protocol Optimization** and keep **IPv6 Compatibility** enabled. An `alt-svc` response header advertising `h3` confirms HTTP/3 availability; a first request may still use HTTP/2.
-
-The Tunnel transport defaults to `auto`, which can use QUIC over UDP port 7844 and fall back to HTTP/2. Set `TUNNEL_PROTOCOL=quic` only when UDP port 7844 is allowed and a forced-QUIC failure is acceptable. Enabling HTTP/3 on `nginx-proxy` itself would not affect visitors because `cloudflared` reaches it over private HTTP.
+- **Tunnel subnet:** `tunnel` is pinned to `172.30.0.0/24` so `nginx-proxy` trusts `CF-Connecting-IP` only from `cloudflared`. Avoid overlapping host/VPN networks; changing it requires recreating the Compose network.
+- **HTTP/3 & IPv6:** Terminated at Cloudflare (enable HTTP/3 and IPv6 Compatibility in Cloudflare settings). Leave `TUNNEL_PROTOCOL=auto` unless outbound UDP/7844 is verified for forced `quic`.
+- **Logs:** Containers use Docker's rotating `local` driver (up to 5 × 10 MB per container); `nginx-proxy` emits JSON access logs.
