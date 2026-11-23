@@ -268,10 +268,15 @@ func TestDockerSocketResolver(t *testing.T) {
 		t.Fatalf("IPv6 resolve = (%q, %v), want (notes-v6, nil)", svc, err)
 	}
 
-	// One-off docker compose run migration container allowed
+	// One-off docker compose run migration container allowed for /v1/database
 	svc, err = resolver.ResolveService(context.Background(), netip.MustParseAddr("172.31.0.11"))
 	if err != nil || svc != "notes" {
 		t.Fatalf("one-off container resolve = (%q, %v), want (notes, nil)", svc, err)
+	}
+
+	// One-off container rejected by ResolveNonOneoffService (used by /v1/admin/stats)
+	if _, err := resolver.ResolveNonOneoffService(context.Background(), netip.MustParseAddr("172.31.0.11")); !errors.Is(err, ErrForbiddenCaller) {
+		t.Fatalf("expected ErrForbiddenCaller for one-off in ResolveNonOneoffService, got %v", err)
 	}
 
 	// Reserved infra service rejected

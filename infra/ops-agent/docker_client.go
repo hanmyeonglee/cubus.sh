@@ -680,12 +680,20 @@ func (d *DockerClient) DiskUsage() *DockerDiskUsage {
 func (d *DockerClient) FindServiceContainer(service string) (ContainerInfo, bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	var fallback ContainerInfo
+	var found bool
 	for _, c := range d.containers {
 		if c.Service == service {
-			return c, true
+			if c.State == "running" {
+				return c, true
+			}
+			if !found {
+				fallback = c
+				found = true
+			}
 		}
 	}
-	return ContainerInfo{}, false
+	return fallback, found
 }
 
 func (d *DockerClient) OpenContainerLogs(ctx context.Context, containerID string, query url.Values) (io.ReadCloser, error) {

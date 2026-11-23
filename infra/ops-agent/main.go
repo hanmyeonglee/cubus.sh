@@ -96,6 +96,10 @@ func run(logger *slog.Logger) error {
 
 	opsSrv := NewOpsServer(dockerCli, ring, cfg.DevLoopbackToken, logger)
 
+	srvCtx, cancelSrv := context.WithCancel(context.Background())
+	defer cancelSrv()
+	baseCtxFn := func(net.Listener) context.Context { return srvCtx }
+
 	var servers []*http.Server
 	if cfg.AdminBindCIDR != nil {
 		adminAddr, err := ResolveAdminBindAddr(cfg.AdminBindCIDR, cfg.AdminPort)
@@ -107,6 +111,7 @@ func run(logger *slog.Logger) error {
 			&http.Server{
 				Addr:              net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.AdminPort)),
 				Handler:           opsSrv.HealthHandler(),
+				BaseContext:       baseCtxFn,
 				ReadHeaderTimeout: 5 * time.Second,
 				ReadTimeout:       5 * time.Second,
 				WriteTimeout:      5 * time.Second,
@@ -114,6 +119,7 @@ func run(logger *slog.Logger) error {
 			&http.Server{
 				Addr:              adminAddr,
 				Handler:           opsSrv.APIHandler(),
+				BaseContext:       baseCtxFn,
 				ReadHeaderTimeout: 5 * time.Second,
 				ReadTimeout:       15 * time.Second,
 				WriteTimeout:      30 * time.Second, // Extended per-event for SSE via ResponseController
@@ -125,6 +131,7 @@ func run(logger *slog.Logger) error {
 		servers = append(servers, &http.Server{
 			Addr:              net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.AdminPort)),
 			Handler:           opsSrv.CombinedDevHandler(),
+			BaseContext:       baseCtxFn,
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       15 * time.Second,
 			WriteTimeout:      30 * time.Second,
@@ -164,6 +171,7 @@ func run(logger *slog.Logger) error {
 	}
 
 	cancelBg()
+	cancelSrv() // Cancel active SSE request contexts immediately so Shutdown does not stall to SIGKILL.
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownGraceTime)
 	defer cancelShutdown()
 	for _, srv := range servers {
@@ -181,13 +189,17 @@ func runMetricsSampler(ctx context.Context, interval time.Duration, dockerCli *D
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			passCtx, cancel := context.WithTimeout(ctx, interval)
-			if err := dockerCli.RefreshContainers(passCtx); err != nil && !errors.Is(err, context.Canceled) {
+			// Separate sub-contexts so slow container stats cannot starve host/nvidia-smi collection.
+			cntCtx, cancelCnt := context.WithTimeout(ctx, interval)
+			if err := dockerCli.RefreshContainers(cntCtx); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Warn("container snapshot refresh failed", "err", err)
 			}
-			snap, pt := collector.Collect(passCtx)
+			cancelCnt()
+
+			hostCtx, cancelHost := context.WithTimeout(ctx, interval)
+			snap, pt := collector.Collect(hostCtx)
+			cancelHost()
 			ring.Record(snap, pt)
-			cancel()
 		}
 	}
 }

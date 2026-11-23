@@ -113,6 +113,30 @@ func TestLogDemuxSanitizeRedactAndSearch(t *testing.T) {
 	if err != nil || len(ttyLines) != 2 || len(ttyLines[0]) != maxLogLineBytes || ttyLines[1] != "short" {
 		t.Fatalf("unexpected overlong TTY handling: len=%d first=%d err=%v", len(ttyLines), len(ttyLines[0]), err)
 	}
+
+	// 3. Overlong non-TTY stdcopy line split across two frames must discard tail until '\n' (no fake extra entry).
+	var splitFrames bytes.Buffer
+	splitFrames.Write(encodeStdCopyFrame(1, strings.Repeat("a", maxLogLineBytes+100)))
+	splitFrames.Write(encodeStdCopyFrame(1, "tail-to-discard\n2026-11-22T12:00:05Z next line\n"))
+	var nonTTY []string
+	_, err = ReadDockerLogStream(&splitFrames, false, maxLogScanBytes, func(_, line string) bool {
+		nonTTY = append(nonTTY, line)
+		return true
+	})
+	if err != nil || len(nonTTY) != 2 || len(nonTTY[0]) != maxLogLineBytes || nonTTY[1] != "2026-11-22T12:00:05Z next line" {
+		t.Fatalf("unexpected split non-TTY overlong line handling: len=%d lines=%q err=%v", len(nonTTY), nonTTY, err)
+	}
+
+	// 4. JSON log with Bearer token + JSON-escaped ANSI/secret stays valid JSON and gets re-sanitized after unmarshal.
+	jsonLine := `2026-11-22T12:00:03Z {"level":"ERROR","msg":"Authorization: Bearer secretTok99 \u001b[31mboom password=mysecret"}`
+	parsed := ParseDockerLogLine("artifact", "stdout", jsonLine)
+	if parsed.Level != "error" ||
+		strings.Contains(parsed.Message, "secretTok99") ||
+		strings.Contains(parsed.Message, "mysecret") ||
+		strings.Contains(parsed.Message, "\x1b") ||
+		!strings.Contains(parsed.Message, "[REDACTED]") {
+		t.Fatalf("JSON redaction/re-sanitization failed: %+v", parsed)
+	}
 }
 
 func TestDockerClientUnixSocketPeerVerifyStatsAndDiscovery(t *testing.T) {

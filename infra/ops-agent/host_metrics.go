@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/csv"
 	"errors"
 	"math"
 	"os"
@@ -438,12 +439,17 @@ func readOSPrettyName(primaryPath string) string {
 
 func readDiskStatfs(primaryPath string) DiskStats {
 	target := primaryPath
-	if _, err := os.Stat(target); err != nil {
+	hint := "host root filesystem"
+	if target == "" {
 		target = "/"
+		hint = "container root filesystem (/)"
+	} else if _, err := os.Stat(target); err != nil {
+		target = "/"
+		hint = "container root filesystem (/)"
 	}
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(target, &st); err != nil {
-		return DiskStats{MountHint: target}
+		return DiskStats{MountHint: hint}
 	}
 	bsize := uint64(st.Frsize)
 	if bsize == 0 {
@@ -461,7 +467,7 @@ func readDiskStatfs(primaryPath string) DiskStats {
 		pct = round1(float64(used) / float64(total) * 100.0)
 	}
 	return DiskStats{
-		MountHint:      "host root filesystem",
+		MountHint:      hint,
 		TotalBytes:     total,
 		UsedBytes:      used,
 		AvailableBytes: avail,
@@ -560,13 +566,15 @@ func collectNVIDIAGPU(ctx context.Context) GPUStats {
 
 // parseNVIDIASMICSV tolerates [N/A] / [Not Supported] fields per device so partial sensor support never breaks GPU telemetry.
 func parseNVIDIASMICSV(raw string) []GPUDevice {
+	r := csv.NewReader(strings.NewReader(raw))
+	r.FieldsPerRecord = -1
+	r.TrimLeadingSpace = true
+	records, err := r.ReadAll()
+	if err != nil {
+		return nil
+	}
 	var devices []GPUDevice
-	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, ",")
+	for _, parts := range records {
 		if len(parts) < 11 {
 			continue
 		}

@@ -171,7 +171,17 @@ func (s *BrokerServer) handleAdminStats(w http.ResponseWriter, r *http.Request) 
 	opCtx, cancel := context.WithTimeout(r.Context(), adminStatsTimeout)
 	defer cancel()
 
-	serviceName, err := s.resolver.ResolveService(opCtx, peerIP)
+	var (
+		serviceName string
+		err         error
+	)
+	if strictResolver, ok := s.resolver.(interface {
+		ResolveNonOneoffService(context.Context, netip.Addr) (string, error)
+	}); ok {
+		serviceName, err = strictResolver.ResolveNonOneoffService(opCtx, peerIP)
+	} else {
+		serviceName, err = s.resolver.ResolveService(opCtx, peerIP)
+	}
 	if err != nil {
 		if errors.Is(err, ErrUnknownCaller) || errors.Is(err, ErrForbiddenCaller) || errors.Is(err, ErrAmbiguousCaller) {
 			s.logger.Warn("rejected admin stats request", "peer_ip", peerIP.String(), "error", err)

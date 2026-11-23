@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	maxLogScanBytes       = 8 << 20 // 8 MiB per search request
-	maxLogFrameBytes      = 1 << 20 // 1 MiB single stdcopy frame cap
+	maxLogScanBytes       = 16 << 20 // 16 MiB total scan safety ceiling
+	maxLogFrameBytes      = 1 << 20  // 1 MiB single stdcopy frame cap
 	maxLogLineBytes       = 32 << 10
 	defaultLogTail        = 2000
 	maxLogTail            = 5000
@@ -40,10 +40,10 @@ var (
 		re   *regexp.Regexp
 		repl string
 	}{
-		{regexp.MustCompile(`(?i)(postgres(?:ql)?://)[^@\s"']+(@)`), `${1}[REDACTED]${2}`},
-		{regexp.MustCompile(`(?i)(authorization\s*[:=]\s*bearer\s+)\S+`), `${1}[REDACTED]`},
-		{regexp.MustCompile(`(?i)((?:set-)?cookie\s*[:=]\s*)[^\r\n;"]+`), `${1}[REDACTED]`},
-		{regexp.MustCompile(`(?i)("?(?:password|client_secret|access_token|refresh_token)"?\s*[:=]\s*"?)[^"\s,&}]+`), `${1}[REDACTED]`},
+		{regexp.MustCompile(`(?i)(postgres(?:ql)?://)[^@\s"'\\]+(@)`), `${1}[REDACTED]${2}`},
+		{regexp.MustCompile(`(?i)("?authorization"?\s*[:=]\s*"?bearer\s+)[^\s"',}\]]+`), `${1}[REDACTED]`},
+		{regexp.MustCompile(`(?i)("?(?:set-)?cookie"?\s*[:=]\s*"?)[^\r\n;"'}\]]+`), `${1}[REDACTED]`},
+		{regexp.MustCompile(`(?i)("?(?:password|client_secret|access_token|refresh_token)"?\s*[:=]\s*"?)[^"\s,&}\]]+`), `${1}[REDACTED]`},
 	}
 )
 
@@ -132,17 +132,17 @@ func ParseDockerLogLine(service, stream, rawLine string) LogEntry {
 				entry.Level = normalizeLevel(lvl)
 			}
 			if msg, ok := obj["msg"].(string); ok && msg != "" {
-				entry.Message = msg
+				entry.Message = SanitizeAndRedact(msg)
 			} else if msg, ok := obj["message"].(string); ok && msg != "" {
-				entry.Message = msg
+				entry.Message = SanitizeAndRedact(msg)
 			}
 			// Detect nginx-proxy JSON access log shape.
 			if reqStr, ok := obj["request"].(string); ok && reqStr != "" {
 				st := &StructuredLog{
-					Request: reqStr,
+					Request: SanitizeAndRedact(reqStr),
 				}
 				if h, ok := obj["host"].(string); ok {
-					st.Host = h
+					st.Host = SanitizeAndRedact(h)
 				}
 				if code, ok := obj["status"].(float64); ok {
 					st.Status = int(code)
@@ -159,15 +159,15 @@ func ParseDockerLogLine(service, stream, rawLine string) LogEntry {
 					st.RequestTime = &rt
 				}
 				if ip, ok := obj["cf_connecting_ip"].(string); ok && ip != "" {
-					st.ClientIP = ip
+					st.ClientIP = SanitizeAndRedact(ip)
 				} else if ip, ok := obj["client_ip"].(string); ok {
-					st.ClientIP = ip
+					st.ClientIP = SanitizeAndRedact(ip)
 				}
 				if up, ok := obj["upstream_addr"].(string); ok {
-					st.Upstream = up
+					st.Upstream = SanitizeAndRedact(up)
 				}
 				if ray, ok := obj["cf_ray"].(string); ok {
-					st.CFRay = ray
+					st.CFRay = SanitizeAndRedact(ray)
 				}
 				entry.Structured = st
 				entry.Message = fmt.Sprintf("%d %s %s", st.Status, st.Host, st.Request)
@@ -212,11 +212,15 @@ func ReadDockerLogStream(r io.Reader, isTTY bool, maxBytes int64, onLine func(st
 	}
 	var scanned int64
 	var hdr [8]byte
-	var partials = map[string][]byte{}
+	partials := map[string][]byte{}
+	discarding := map[string]bool{}
 	flushPartials := func() {
-		for st, buf := range partials {
+		for _, st := range []string{"stdout", "stderr"} {
+			buf := partials[st]
 			if len(buf) > 0 {
-				onLine(st, string(buf))
+				if !onLine(st, string(buf)) {
+					return
+				}
 			}
 		}
 	}
@@ -264,13 +268,28 @@ func ReadDockerLogStream(r io.Reader, isTTY bool, maxBytes int64, onLine func(st
 		}
 		scanned += toRead
 
+		// If previous frame truncated an overlong line (>maxLogLineBytes), discard remaining
+		// tail bytes until the terminating newline so it never splits into a fake LogEntry.
+		if discarding[streamName] {
+			nl := bytes.IndexByte(buf, '\n')
+			if nl < 0 {
+				if truncated {
+					flushPartials()
+					return true, nil
+				}
+				continue
+			}
+			discarding[streamName] = false
+			buf = buf[nl+1:]
+		}
+
 		combined := append(partials[streamName], buf...)
 		for {
 			idx := bytes.IndexByte(combined, '\n')
 			if idx < 0 {
 				break
 			}
-			lineBytes := combined[:idx]
+			lineBytes := bytes.TrimRight(combined[:idx], "\r")
 			if len(lineBytes) > maxLogLineBytes {
 				lineBytes = lineBytes[:maxLogLineBytes]
 			}
@@ -283,6 +302,7 @@ func ReadDockerLogStream(r io.Reader, isTTY bool, maxBytes int64, onLine func(st
 			if !onLine(streamName, string(combined[:maxLogLineBytes])) {
 				return true, nil
 			}
+			discarding[streamName] = true
 			combined = nil
 		}
 		partials[streamName] = append([]byte(nil), combined...)
@@ -427,11 +447,12 @@ func (s *OpsServer) searchLogs(ctx context.Context, p LogSearchParams) (LogSearc
 
 	perContainerCap := int64(maxLogScanBytes)
 	if len(targets) > 1 {
-		perContainerCap = max(int64(maxLogScanBytes/len(targets)), 512<<10)
+		perContainerCap = max(int64(maxLogScanBytes/len(targets)), 1<<20)
 	}
 
 	entries := make([]LogEntry, 0, min(p.Limit, 256))
 	truncated := false
+	var oldestScannedTS time.Time
 
 	for _, c := range targets {
 		q := url.Values{
@@ -444,7 +465,8 @@ func (s *OpsServer) searchLogs(ctx context.Context, p LogSearchParams) (LogSearc
 			q.Set("since", strconv.FormatInt(p.Since.Unix(), 10))
 		}
 		if p.Until != nil {
-			q.Set("until", strconv.FormatInt(p.Until.Unix(), 10))
+			// Docker until accepts integer seconds; pass Unix()+1 and enforce exact sub-second cutoff in Go.
+			q.Set("until", strconv.FormatInt(p.Until.Unix()+1, 10))
 		}
 
 		rc, err := s.docker.OpenContainerLogs(searchCtx, c.FullID, q)
@@ -452,15 +474,35 @@ func (s *OpsServer) searchLogs(ctx context.Context, p LogSearchParams) (LogSearc
 			continue
 		}
 		var seenLines int
+		// Keep a bounded sliding window of the newest p.Limit matching lines per container
+		// so scanning oldest-to-newest never consumes unbounded memory or drops recent matches.
+		svcMatches := make([]LogEntry, 0, min(p.Limit, 128))
 		wasTrunc, _ := ReadDockerLogStream(rc, c.IsTTY, perContainerCap, func(stream, line string) bool {
 			seenLines++
 			entry := ParseDockerLogLine(c.Service, stream, line)
+			if p.Since != nil && entry.Timestamp.Before(*p.Since) {
+				return true
+			}
+			if p.Until != nil && !entry.Timestamp.Before(*p.Until) {
+				return true
+			}
+			if oldestScannedTS.IsZero() || entry.Timestamp.Before(oldestScannedTS) {
+				oldestScannedTS = entry.Timestamp
+			}
 			if matchLogEntry(entry, p, re) {
-				entries = append(entries, entry)
+				if len(svcMatches) >= p.Limit {
+					// Drop oldest match to retain newest p.Limit matches.
+					copy(svcMatches, svcMatches[1:])
+					svcMatches[len(svcMatches)-1] = entry
+					truncated = true
+				} else {
+					svcMatches = append(svcMatches, entry)
+				}
 			}
 			return true
 		})
 		rc.Close()
+		entries = append(entries, svcMatches...)
 		if wasTrunc || seenLines >= p.Tail {
 			truncated = true
 		}
@@ -479,9 +521,18 @@ func (s *OpsServer) searchLogs(ctx context.Context, p LogSearchParams) (LogSearc
 		Count:     len(entries),
 		Truncated: truncated,
 	}
+	// Choose cursor so "Load Older" advances accurately even when a scanned window had 0 filter matches.
+	var cursorTS time.Time
 	if len(entries) > 0 {
-		oldest := entries[len(entries)-1].Timestamp
-		res.NextUntil = oldest.Add(-time.Second).UTC().Format(time.RFC3339)
+		cursorTS = entries[len(entries)-1].Timestamp
+		if !oldestScannedTS.IsZero() && oldestScannedTS.Before(cursorTS) && len(entries) < p.Limit {
+			cursorTS = oldestScannedTS
+		}
+	} else if !oldestScannedTS.IsZero() {
+		cursorTS = oldestScannedTS
+	}
+	if !cursorTS.IsZero() {
+		res.NextUntil = cursorTS.UTC().Format(time.RFC3339Nano)
 	}
 	return res, nil
 }

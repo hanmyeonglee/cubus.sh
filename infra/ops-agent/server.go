@@ -179,7 +179,7 @@ func (s *OpsServer) handleLogsSearch(w http.ResponseWriter, r *http.Request) {
 		params.Since = &ts
 	}
 	if rawUntil := strings.TrimSpace(q.Get("until")); rawUntil != "" {
-		ts, err := time.Parse(time.RFC3339, rawUntil)
+		ts, err := time.Parse(time.RFC3339Nano, rawUntil)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid until value (expected RFC3339)")
 			return

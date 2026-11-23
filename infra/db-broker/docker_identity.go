@@ -210,9 +210,27 @@ func (r *DockerSocketResolver) discoverSelf(ctx context.Context) error {
 }
 
 func (r *DockerSocketResolver) ResolveService(ctx context.Context, peerIP netip.Addr) (string, error) {
+	service, _, err := r.resolveServiceWithOneoff(ctx, peerIP)
+	return service, err
+}
+
+// ResolveNonOneoffService resolves the caller's Compose service name while
+// rejecting one-off `docker compose run` containers (used for admin stats).
+func (r *DockerSocketResolver) ResolveNonOneoffService(ctx context.Context, peerIP netip.Addr) (string, error) {
+	service, oneoff, err := r.resolveServiceWithOneoff(ctx, peerIP)
+	if err != nil {
+		return "", err
+	}
+	if oneoff {
+		return "", ErrForbiddenCaller
+	}
+	return service, nil
+}
+
+func (r *DockerSocketResolver) resolveServiceWithOneoff(ctx context.Context, peerIP netip.Addr) (string, bool, error) {
 	peerIP = peerIP.Unmap()
 	if !peerIP.IsValid() || peerIP.IsUnspecified() || peerIP.IsLinkLocalUnicast() || peerIP.IsLinkLocalMulticast() || peerIP.IsMulticast() {
-		return "", ErrUnknownCaller
+		return "", false, ErrUnknownCaller
 	}
 
 	filtersMap := map[string][]string{
@@ -222,31 +240,31 @@ func (r *DockerSocketResolver) ResolveService(ctx context.Context, peerIP netip.
 	}
 	filtersJSON, err := json.Marshal(filtersMap)
 	if err != nil {
-		return "", fmt.Errorf("marshal docker filters: %w", err)
+		return "", false, fmt.Errorf("marshal docker filters: %w", err)
 	}
 
 	endpoint := fmt.Sprintf("http://docker%s/containers/json?filters=%s", r.apiPrefix, url.QueryEscape(string(filtersJSON)))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("query docker containers: %w", err)
+		return "", false, fmt.Errorf("query docker containers: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDockerRespBytes))
 	if err != nil {
-		return "", fmt.Errorf("read docker containers response: %w", err)
+		return "", false, fmt.Errorf("read docker containers response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("docker /containers/json returned status %d", resp.StatusCode)
+		return "", false, fmt.Errorf("docker /containers/json returned status %d", resp.StatusCode)
 	}
 
 	var containers []dockerContainerSummary
 	if err := json.Unmarshal(body, &containers); err != nil {
-		return "", fmt.Errorf("decode docker containers response: %w", err)
+		return "", false, fmt.Errorf("decode docker containers response: %w", err)
 	}
 
 	var matches []dockerContainerSummary
@@ -258,20 +276,21 @@ func (r *DockerSocketResolver) ResolveService(ctx context.Context, peerIP netip.
 
 	switch len(matches) {
 	case 0:
-		return "", ErrUnknownCaller
+		return "", false, ErrUnknownCaller
 	case 1:
 	default:
-		return "", ErrAmbiguousCaller
+		return "", false, ErrAmbiguousCaller
 	}
 
+	oneoff := strings.EqualFold(strings.TrimSpace(matches[0].Labels["com.docker.compose.oneoff"]), "true")
 	service := strings.TrimSpace(matches[0].Labels["com.docker.compose.service"])
 	if service == "" {
-		return "", ErrUnknownCaller
+		return "", false, ErrUnknownCaller
 	}
 	if isReservedServiceName(service) {
-		return "", ErrForbiddenCaller
+		return "", false, ErrForbiddenCaller
 	}
-	return service, nil
+	return service, oneoff, nil
 }
 
 func containerMatchesIPOnNetwork(c dockerContainerSummary, networkID string, peerIP netip.Addr) bool {
