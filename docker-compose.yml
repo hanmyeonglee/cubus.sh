@@ -97,6 +97,10 @@ services:
       PUBLIC_BASE_URL: "https://artifact.cubus.sh"
       DB_BROKER_URL: "http://db-broker:8080/v1/database"
       ADMIN_BIND_CIDR: "172.31.0.0/24"
+      ADMIN_ALLOW_CIDR: "172.31.0.2/32"
+    labels:
+      cubus.admin.port: "9090"
+      cubus.admin.name: "artifact"
     depends_on:
       db-broker:
         condition: service_healthy
@@ -105,6 +109,32 @@ services:
       - web
       - db
       - admin
+
+  admin:
+    extends:
+      file: ./sites/admin/compose.service.yml
+      service: admin
+    restart: unless-stopped
+    environment:
+      VIRTUAL_HOST: admin.cubus.sh
+      VIRTUAL_PORT: "8000"
+      PUBLIC_BASE_URL: "https://admin.cubus.sh"
+      DB_BROKER_URL: "http://db-broker:8080/v1/database"
+      DB_STATS_URL: "http://db-broker:8080/v1/admin/stats"
+      OPS_AGENT_URL: "http://ops-agent:9091"
+      ADMIN_NETWORK_CIDR: "172.31.0.0/24"
+    depends_on:
+      db-broker:
+        condition: service_healthy
+      ops-agent:
+        condition: service_healthy
+    logging: *default-logging
+    networks:
+      web: {}
+      web-external: {}
+      db: {}
+      admin:
+        ipv4_address: 172.31.0.2
 
   cloudflared:
     image: cloudflare/cloudflared:2026.9.1
@@ -193,6 +223,43 @@ services:
     networks:
       - db
 
+  ops-agent:
+    build:
+      context: ./infra/ops-agent
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      ADMIN_PORT: "9091"
+      ADMIN_BIND_CIDR: "172.31.0.0/24"
+      DOCKER_SOCKET: "/var/run/docker.sock"
+      ALLOWED_SERVICE: "admin"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /etc/os-release:/host/etc/os-release:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [utility]
+    expose:
+      - "9091"
+    healthcheck:
+      test: ["CMD", "/ops-agent", "-healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    logging: *default-logging
+    networks:
+      - admin
+
 networks:
   tunnel:
     driver: bridge
@@ -213,6 +280,8 @@ networks:
     ipam:
       config:
         - subnet: 172.31.0.0/24
+          gateway: 172.31.0.1
+          ip_range: 172.31.0.128/25
 
 volumes:
   postgres-data:

@@ -35,6 +35,8 @@ var (
 		"nginx-proxy": {},
 		"nginx_proxy": {},
 		"cloudflared": {},
+		"ops-agent":   {},
+		"ops_agent":   {},
 	}
 )
 

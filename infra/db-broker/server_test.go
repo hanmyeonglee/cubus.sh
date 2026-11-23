@@ -736,3 +736,106 @@ func TestBrokerConcurrencySemaphoreAndSingleflight(t *testing.T) {
 		t.Fatalf("expected singleflight to deduplicate to 1 call, got %d", calls.Load())
 	}
 }
+
+type mockStatsProvisioner struct {
+	mockProvisioner
+	statsFn func(context.Context) (ClusterStats, error)
+}
+
+func (m *mockStatsProvisioner) ClusterStats(ctx context.Context) (ClusterStats, error) {
+	return m.statsFn(ctx)
+}
+
+func TestAdminStatsEndpointAndReservedOpsAgent(t *testing.T) {
+	if _, err := NormalizeIdentifier("ops-agent"); !errors.Is(err, ErrForbiddenCaller) {
+		t.Fatalf("expected ops-agent to be rejected as reserved infra service, got %v", err)
+	}
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	resolver := &mockResolver{
+		resolveFn: func(_ context.Context, ip netip.Addr) (string, error) {
+			switch ip.String() {
+			case "172.18.0.2":
+				return "admin", nil
+			case "172.18.0.3":
+				return "artifact", nil
+			case "172.18.0.4":
+				return "", ErrAmbiguousCaller
+			default:
+				return "", ErrUnknownCaller
+			}
+		},
+	}
+
+	svcName := "artifact"
+	now := time.Now().UTC()
+	prov := &mockStatsProvisioner{
+		statsFn: func(context.Context) (ClusterStats, error) {
+			return ClusterStats{
+				ServerVersion:  "18.7",
+				StartedAt:      now.Add(-time.Hour),
+				MaxConnections: 200,
+				ClientConns:    4,
+				ActiveQueries:  1,
+				TotalSizeBytes: 123456,
+				Databases: []DatabaseStats{
+					{Name: "postgres", SizeBytes: 10000, Connections: 1},
+					{Name: "svc_artifact", ServiceName: &svcName, SizeBytes: 113456, Connections: 3, CreatedAt: &now},
+				},
+				CollectedAt: now,
+			}, nil
+		},
+	}
+
+	broker := NewBrokerServer(context.Background(), resolver, prov, 2, silentLogger)
+	h := broker.Handler()
+
+	// admin caller -> 200 OK with metadata and zero credential fields.
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/stats", nil)
+	req.RemoteAddr = "172.18.0.2:40000"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for admin caller, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("missing Cache-Control: no-store")
+	}
+	if strings.Contains(strings.ToLower(rec.Body.String()), "password") {
+		t.Fatalf("unexpected password field in stats response: %s", rec.Body.String())
+	}
+	var got ClusterStats
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal stats: %v", err)
+	}
+	if got.ServerVersion != "18.7" || len(got.Databases) != 2 {
+		t.Fatalf("unexpected stats payload: %+v", got)
+	}
+
+	// Non-admin service (artifact) -> 403 Forbidden.
+	req = httptest.NewRequest(http.MethodGet, "/v1/admin/stats", nil)
+	req.RemoteAddr = "172.18.0.3:40001"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for artifact caller, got %d", rec.Code)
+	}
+
+	// Ambiguous caller -> 403 Forbidden (not 500).
+	req = httptest.NewRequest(http.MethodGet, "/v1/admin/stats", nil)
+	req.RemoteAddr = "172.18.0.4:40002"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for ambiguous caller, got %d", rec.Code)
+	}
+
+	// POST method rejected -> 405.
+	req = httptest.NewRequest(http.MethodPost, "/v1/admin/stats", nil)
+	req.RemoteAddr = "172.18.0.2:40003"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for POST /v1/admin/stats, got %d", rec.Code)
+	}
+}

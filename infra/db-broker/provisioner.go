@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -32,6 +33,7 @@ const (
 	roleTempFileLimit           = "512MB"
 	roleIdleInTxConfigEntry     = "idle_in_transaction_session_timeout=" + roleIdleInTxTimeout
 	roleTempFileLimitConfigLine = "temp_file_limit=" + roleTempFileLimit
+	clusterStatsCacheTTL        = 20 * time.Second
 )
 
 var (
@@ -70,6 +72,29 @@ func (c DatabaseCredentials) String() string {
 type Provisioner interface {
 	Provision(ctx context.Context, serviceName string) (DatabaseCredentials, error)
 	Ping(ctx context.Context) error
+}
+
+type DatabaseStats struct {
+	Name        string     `json:"name"`
+	ServiceName *string    `json:"service_name,omitempty"`
+	SizeBytes   int64      `json:"size_bytes"`
+	Connections int        `json:"connections"`
+	CreatedAt   *time.Time `json:"created_at,omitempty"`
+}
+
+type ClusterStats struct {
+	ServerVersion   string          `json:"server_version"`
+	StartedAt       time.Time       `json:"started_at"`
+	MaxConnections  int             `json:"max_connections"`
+	ClientConns     int             `json:"client_connections"`
+	ActiveQueries   int             `json:"active_queries"`
+	TotalSizeBytes  int64           `json:"total_size_bytes"`
+	Databases       []DatabaseStats `json:"databases"`
+	CollectedAt     time.Time       `json:"collected_at"`
+}
+
+type StatsProvider interface {
+	ClusterStats(ctx context.Context) (ClusterStats, error)
 }
 
 // NormalizeIdentifier converts a Compose service name into a safe,
@@ -126,6 +151,10 @@ type PGProvisioner struct {
 	cfg              Config
 	passwordGen      func() (string, error)
 	scramVerifierGen func(string) (string, error)
+
+	statsMu       sync.Mutex
+	statsCached   ClusterStats
+	statsCachedAt time.Time
 }
 
 func NewPGProvisioner(ctx context.Context, cfg Config) (*PGProvisioner, error) {
@@ -157,6 +186,90 @@ func (p *PGProvisioner) Close() {
 
 func (p *PGProvisioner) Ping(ctx context.Context) error {
 	return p.pool.Ping(ctx)
+}
+
+// ClusterStats returns cached read-only PostgreSQL cluster and per-database metadata
+// for admin observability. It never reads or exposes tenant passwords.
+func (p *PGProvisioner) ClusterStats(ctx context.Context) (ClusterStats, error) {
+	p.statsMu.Lock()
+	if !p.statsCachedAt.IsZero() && time.Since(p.statsCachedAt) < clusterStatsCacheTTL {
+		cached := p.statsCached
+		cached.Databases = slices.Clone(p.statsCached.Databases)
+		p.statsMu.Unlock()
+		return cached, nil
+	}
+	p.statsMu.Unlock()
+
+	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return ClusterStats{}, fmt.Errorf("begin stats tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = '2s'`); err != nil {
+		return ClusterStats{}, fmt.Errorf("set stats timeout: %w", err)
+	}
+
+	var out ClusterStats
+	if err := tx.QueryRow(ctx, `SHOW server_version`).Scan(&out.ServerVersion); err != nil {
+		return ClusterStats{}, fmt.Errorf("query server_version: %w", err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT pg_postmaster_start_time(), current_setting('max_connections')::int`).Scan(&out.StartedAt, &out.MaxConnections); err != nil {
+		return ClusterStats{}, fmt.Errorf("query server info: %w", err)
+	}
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(*)::int, COUNT(*) FILTER (WHERE state = 'active')::int
+		FROM pg_stat_activity
+		WHERE backend_type = 'client backend'
+	`).Scan(&out.ClientConns, &out.ActiveQueries); err != nil {
+		return ClusterStats{}, fmt.Errorf("query client connections: %w", err)
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT d.datname,
+		       c.service_name,
+		       pg_database_size(d.datname)::bigint,
+		       COALESCE((
+		           SELECT COUNT(*)::int
+		           FROM pg_stat_activity a
+		           WHERE a.datname = d.datname AND a.backend_type = 'client backend'
+		       ), 0),
+		       c.created_at
+		FROM pg_database d
+		LEFT JOIN db_broker.credentials c ON c.db_identifier = d.datname
+		WHERE NOT d.datistemplate
+		ORDER BY d.datname
+	`)
+	if err != nil {
+		return ClusterStats{}, fmt.Errorf("query database sizes: %w", err)
+	}
+	defer rows.Close()
+
+	dbs := make([]DatabaseStats, 0, 8)
+	var totalBytes int64
+	for rows.Next() {
+		var d DatabaseStats
+		if err := rows.Scan(&d.Name, &d.ServiceName, &d.SizeBytes, &d.Connections, &d.CreatedAt); err != nil {
+			return ClusterStats{}, fmt.Errorf("scan database stats: %w", err)
+		}
+		totalBytes += d.SizeBytes
+		dbs = append(dbs, d)
+	}
+	if err := rows.Err(); err != nil {
+		return ClusterStats{}, fmt.Errorf("iterate database stats: %w", err)
+	}
+
+	out.TotalSizeBytes = totalBytes
+	out.Databases = dbs
+	out.CollectedAt = time.Now().UTC()
+
+	p.statsMu.Lock()
+	p.statsCached = out
+	p.statsCached.Databases = slices.Clone(dbs)
+	p.statsCachedAt = time.Now()
+	p.statsMu.Unlock()
+
+	return out, nil
 }
 
 // Bootstrap locks down system databases and initializes the superuser-only

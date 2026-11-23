@@ -32,7 +32,7 @@ See [compose-service-template.yml](./references/compose-service-template.yml) fo
    - `expose` for the internal container port
    - `healthcheck` appropriate for the container's installed tools
    - Optional `env_file` in canonical form (`- path: .env`, `required: true`), `volumes`, or `deploy` GPU reservations
-   - Do **not** include host `ports:`, `VIRTUAL_HOST`, `VIRTUAL_PORT`, `DB_BROKER_URL`, `ADMIN_BIND_CIDR`, `restart`, `logging`, parent `networks:`, or parent `depends_on:` (`db-broker`, `postgres`).
+   - Do **not** include host `ports:`, `VIRTUAL_HOST`, `VIRTUAL_PORT`, `DB_BROKER_URL`, `ADMIN_BIND_CIDR`, `ADMIN_ALLOW_CIDR`, `restart`, `logging`, parent `networks:`, or parent `depends_on:` (`db-broker`, `ops-agent`, `postgres`).
 2. Create or update `.repos/<repo>/docker-compose.yml` to extend `compose.service.yml` and publish loopback-only `ports: ["127.0.0.1:<local-port>:<container-port>"]` for local runs (plus an optional local `postgres:18.7-alpine3.24` container mounted at `/var/lib/postgresql` if the service uses PostgreSQL).
 3. Verify the service's `Dockerfile` pins security-sensitive base images (such as `nginx` or `postgres`) to explicit patch versions.
 4. Ensure `.repos/<repo>/README.md` documents any required `.env` keys and prerequisites so root `README.md` can simply link to it.
@@ -63,7 +63,7 @@ See [compose-service-template.yml](./references/compose-service-template.yml) fo
      - Error responses are JSON `{"error":"..."}`. Retry network errors and HTTP `429`/`503` (honoring `Retry-After`) with bounded exponential backoff + jitter; fail fast on `403`/`409`.
      - **Driver caveat:** SQLAlchemy + `asyncpg` rejects `?sslmode=disable` in URLs; construct the DSN from `{host, port, database, username, password}` (or strip `sslmode`).
      - Trusted PostgreSQL extensions (`pg_trgm`, `citext`, `pgcrypto`, `uuid-ossp`, etc.) can be installed directly by the service role inside its own database (`CREATE EXTENSION IF NOT EXISTS ...`).
-3. If the service exposes an optional internal admin API for `admin.cubus.sh`, attach the `admin` network and pass `ADMIN_BIND_CIDR: "172.31.0.0/24"` in root `docker-compose.yml` (never bind the admin listener to `0.0.0.0`, and never attach `nginx-proxy` or `cloudflared` to `admin`).
+3. If the service exposes an optional internal admin API for `admin.cubus.sh`, attach the `admin` network, pass `ADMIN_BIND_CIDR: "172.31.0.0/24"` and `ADMIN_ALLOW_CIDR: "172.31.0.2/32"`, and add labels `cubus.admin.port: "<port>"` and `cubus.admin.name: "<name>"` in root `docker-compose.yml` (never bind the admin listener to `0.0.0.0`, and never attach `nginx-proxy` or `cloudflared` to `admin`).
 4. If the service needs custom nginx proxy directives (for example, an extended `proxy_read_timeout` or `client_max_body_size`), add `config/vhost.d/<hostname>_location`.
 5. Add a single row to the **Subdomains** table in root `README.md` linking to `sites/<slug>` and `sites/<slug>/README.md`. Do not copy internal `.env` variable names or setup details into root `README.md`.
 

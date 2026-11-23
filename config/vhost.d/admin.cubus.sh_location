@@ -1,0 +1,4 @@
+proxy_buffering off;
+proxy_cache off;
+gzip off;
+proxy_read_timeout 300s;

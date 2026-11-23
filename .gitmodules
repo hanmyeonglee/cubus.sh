@@ -13,3 +13,7 @@
 	path = sites/artifact
 	url = https://github.com/hanmyeonglee/artifact.cubus.sh.git
 	branch = main
+[submodule "sites/admin"]
+	path = sites/admin
+	url = https://github.com/hanmyeonglee/admin.cubus.sh.git
+	branch = main

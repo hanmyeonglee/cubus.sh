@@ -18,6 +18,8 @@ const (
 	maxRequestBodyBytes = 1024
 	healthProbeTimeout  = 1500 * time.Millisecond
 	provisionTimeout    = 20 * time.Second
+	adminStatsTimeout   = 3 * time.Second
+	defaultAdminService = "admin"
 )
 
 var errOverloaded = errors.New("provisioner concurrency limit reached")
@@ -29,11 +31,13 @@ type inflightCall struct {
 }
 
 type BrokerServer struct {
-	baseCtx     context.Context
-	resolver    IdentityResolver
-	provisioner Provisioner
-	logger      *slog.Logger
-	sem         chan struct{}
+	baseCtx          context.Context
+	resolver         IdentityResolver
+	provisioner      Provisioner
+	statsProvider    StatsProvider
+	adminServiceName string
+	logger           *slog.Logger
+	sem              chan struct{}
 
 	mu       sync.Mutex
 	inflight map[netip.Addr]*inflightCall
@@ -46,13 +50,19 @@ func NewBrokerServer(baseCtx context.Context, resolver IdentityResolver, provisi
 	if logger == nil {
 		logger = slog.Default()
 	}
+	var sp StatsProvider
+	if provider, ok := provisioner.(StatsProvider); ok {
+		sp = provider
+	}
 	return &BrokerServer{
-		baseCtx:     baseCtx,
-		resolver:    resolver,
-		provisioner: provisioner,
-		logger:      logger,
-		sem:         make(chan struct{}, maxConcurrent),
-		inflight:    make(map[netip.Addr]*inflightCall),
+		baseCtx:          baseCtx,
+		resolver:         resolver,
+		provisioner:      provisioner,
+		statsProvider:    sp,
+		adminServiceName: defaultAdminService,
+		logger:           logger,
+		sem:              make(chan struct{}, maxConcurrent),
+		inflight:         make(map[netip.Addr]*inflightCall),
 	}
 }
 
@@ -60,6 +70,7 @@ func (s *BrokerServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/v1/database", s.handleDatabase)
+	mux.HandleFunc("/v1/admin/stats", s.handleAdminStats)
 	return mux
 }
 
@@ -140,6 +151,54 @@ func (s *BrokerServer) handleDatabase(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, creds)
 }
 
+func (s *BrokerServer) handleAdminStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.statsProvider == nil {
+		writeJSONError(w, http.StatusNotImplemented, "cluster stats unavailable")
+		return
+	}
+
+	peerIP, ok := parsePeerIP(r.RemoteAddr)
+	if !ok {
+		writeJSONError(w, http.StatusForbidden, "unable to determine caller address")
+		return
+	}
+
+	opCtx, cancel := context.WithTimeout(r.Context(), adminStatsTimeout)
+	defer cancel()
+
+	serviceName, err := s.resolver.ResolveService(opCtx, peerIP)
+	if err != nil {
+		if errors.Is(err, ErrUnknownCaller) || errors.Is(err, ErrForbiddenCaller) || errors.Is(err, ErrAmbiguousCaller) {
+			s.logger.Warn("rejected admin stats request", "peer_ip", peerIP.String(), "error", err)
+			writeJSONError(w, http.StatusForbidden, "caller is not authorized")
+			return
+		}
+		s.logger.Error("resolve caller for admin stats failed", "peer_ip", peerIP.String(), "error", err)
+		writeJSONError(w, http.StatusServiceUnavailable, "unable to verify caller identity")
+		return
+	}
+	if serviceName != s.adminServiceName {
+		s.logger.Warn("rejected non-admin caller for stats", "service", serviceName, "peer_ip", peerIP.String())
+		writeJSONError(w, http.StatusForbidden, "admin stats restricted to admin service")
+		return
+	}
+
+	stats, err := s.statsProvider.ClusterStats(opCtx)
+	if err != nil {
+		s.logger.Error("collect postgres cluster stats failed", "error", err)
+		writeJSONError(w, http.StatusServiceUnavailable, "failed to collect postgres cluster stats")
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, stats)
+}
+
 func (s *BrokerServer) provisionForPeer(reqCtx context.Context, peerIP netip.Addr) (DatabaseCredentials, error) {
 	s.mu.Lock()
 	if existing, ok := s.inflight[peerIP]; ok {
@@ -200,7 +259,7 @@ func (s *BrokerServer) provisionForPeer(reqCtx context.Context, peerIP netip.Add
 
 func (s *BrokerServer) writeProvisionError(w http.ResponseWriter, peerIP netip.Addr, err error) {
 	switch {
-	case errors.Is(err, ErrUnknownCaller), errors.Is(err, ErrForbiddenCaller):
+	case errors.Is(err, ErrUnknownCaller), errors.Is(err, ErrForbiddenCaller), errors.Is(err, ErrAmbiguousCaller):
 		s.logger.Warn("rejected database request", "peer_ip", peerIP.String(), "error", err)
 		writeJSONError(w, http.StatusForbidden, "caller is not authorized")
 	case errors.Is(err, ErrInvalidIdentifier):

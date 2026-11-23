@@ -22,11 +22,11 @@ Repository rules for `cubus.sh`, the Cloudflare Tunnel, `nginx-proxy`, and inter
 
 ## Compose, Proxy & Security Invariants
 
-- Keep `compose.service.yml` free of host `ports:`, `VIRTUAL_HOST`, `VIRTUAL_PORT`, `DB_BROKER_URL`, `ADMIN_BIND_CIDR`, `restart`, `logging`, parent network names, and parent `depends_on:` (`db-broker`, `postgres`). Put local loopback ports (`127.0.0.1:...`) and optional local DB containers in each repo's standalone `docker-compose.yml` extending `compose.service.yml`.
+- Keep `compose.service.yml` free of host `ports:`, `VIRTUAL_HOST`, `VIRTUAL_PORT`, `DB_BROKER_URL`, `ADMIN_BIND_CIDR`, `ADMIN_ALLOW_CIDR`, `restart`, `logging`, parent network names, and parent `depends_on:` (`db-broker`, `ops-agent`, `postgres`). Put local loopback ports (`127.0.0.1:...`) and optional local DB containers in each repo's standalone `docker-compose.yml` extending `compose.service.yml`.
 - Inside `compose.service.yml`, use mapping syntax for `build` (`context: .`, `dockerfile: Dockerfile`) and canonical object syntax for `env_file` (`- path: .env`, `required: true`) so relative paths resolve against the submodule directory under `extends`.
 - Keep the `tunnel` subnet (`172.30.0.0/24`) in `docker-compose.yml` identical to `set_real_ip_from` in `config/proxy-real-ip.conf`.
-- Keep `web`, `db`, and `admin` (`172.31.0.0/24`) networks `internal: true`. Attach `web-external` only to services that require outbound internet access at runtime. Never attach `nginx-proxy` or `cloudflared` to `db` or `admin`. Services exposing an internal admin API on `admin` must bind strictly to their `ADMIN_BIND_CIDR` interface IP (never `0.0.0.0`) and stay disabled unless explicitly configured.
-- **Docker socket TCB:** Mount `/var/run/docker.sock` with `:ro` on `nginx-proxy` and `db-broker`, while treating both as host-equivalent Trusted Computing Base (TCB)—`:ro` only prevents modifying the socket mount path and does **not** restrict Docker API writes. Do not publish host ports on root services, and never commit `.env` files or credentials.
+- Keep `web`, `db`, and `admin` (`172.31.0.0/24`, `ip_range: 172.31.0.128/25`, static `172.31.0.2` for `admin`) networks `internal: true`. Attach `web-external` only to services that require outbound internet access at runtime. Never attach `nginx-proxy` or `cloudflared` to `db` or `admin`. Attach `ops-agent` exclusively to `admin`. Services exposing an internal admin API on `admin` must bind strictly to their `ADMIN_BIND_CIDR` interface IP (never `0.0.0.0`), restrict peers via `ADMIN_ALLOW_CIDR=172.31.0.2/32`, and stay disabled unless explicitly configured.
+- **Docker socket TCB:** Mount `/var/run/docker.sock` with `:ro` only on `nginx-proxy`, `db-broker`, and `ops-agent`, treating all three as host-equivalent Trusted Computing Base (TCB)—`:ro` only prevents modifying the socket mount path and does **not** restrict Docker API writes. Never mount `/var/run/docker.sock` on internet-facing app containers such as `admin`. Do not publish host ports on root services, and never commit `.env` files or credentials.
 - Pin security-sensitive base images (especially `nginx` and `postgres`) to explicit patch versions rather than floating tags (`stable`, `1.31`, `18`). `config/nginx-proxy.Dockerfile` is a temporary rebuild of `nginxproxy/nginx-proxy:1.11.6-alpine` onto patched `nginx:1.31.9-alpine3.24`; switch back to an official `nginxproxy/nginx-proxy` tag once upstream ships `nginx >= 1.31.9`.
 
 ## Internal Database Platform (`postgres` + `db-broker`)
@@ -41,7 +41,7 @@ Repository rules for `cubus.sh`, the Cloudflare Tunnel, `nginx-proxy`, and inter
 ## Verification
 
 - Validate edited Compose YAML with `python3 -c 'import yaml, pathlib; yaml.safe_load(pathlib.Path("<file>").read_text())'` and edited shell scripts with `sh -n`.
-- Validate edits in `infra/db-broker/` with `go vet ./...` and `go test -race ./...`.
+- Validate edits in `infra/db-broker/` and `infra/ops-agent/` with `go vet ./...` and `go test -race ./...`.
 - Do not assume the `docker` CLI is available in local WSL environments; if unavailable, state clearly that `docker compose config` was not executed locally.
 
 ## Repo Skills
