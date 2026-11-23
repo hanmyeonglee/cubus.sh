@@ -9,13 +9,12 @@ Each service owns its build, runtime, `.env`, and hardware requirements in its o
 | Host | Service | Source |
 | --- | --- | --- |
 | `cubus.sh` | `main` | [`sites/main`](sites/main) |
-| `simprob.cubus.sh` | `simprobs` | [`sites/simprob`](sites/simprob) ([README](sites/simprob/README.md)) |
 | `audown.cubus.sh` | `audown` | [`sites/audown`](sites/audown) ([README](sites/audown/README.md)) |
 | `choice.cubus.sh` | `choice` | [`sites/choice`](sites/choice) ([README](sites/choice/README.md)) |
 | `artifact.cubus.sh` | `artifact` | [`sites/artifact`](sites/artifact) ([README](sites/artifact/README.md)) |
 | `admin.cubus.sh` | `admin` | [`sites/admin`](sites/admin) ([README](sites/admin/README.md)) |
 
-> `skunor-bot` is **deprecated** and has been removed from this repository's submodules and Compose stack.
+> `skunor-bot` and `simprob.cubus.sh` (`simprobs`) are **deprecated** and have been removed from this repository's submodules and Compose stack.
 
 ## Deploy
 

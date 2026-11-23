@@ -1,7 +1,3 @@
-[submodule "sites/simprob"]
-	path = sites/simprob
-	url = https://github.com/hanmyeonglee/simprob.cubus.sh.git
-	branch = main
 [submodule "sites/audown"]
 	path = sites/audown
 	url = https://github.com/hanmyeonglee/audown.cubus.sh
