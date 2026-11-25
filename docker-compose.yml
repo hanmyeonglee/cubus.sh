@@ -20,7 +20,7 @@ services:
       NO_COLOR: "1"
       TRUST_DOWNSTREAM_PROXY: "true"
     volumes:
-      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/tmp/docker.sock:ro
       - ./config/proxy-real-ip.conf:/etc/nginx/conf.d/00-real-ip.conf:ro
       - ./config/proxy-fallback.conf:/etc/nginx/conf.d/zz-fallback.conf:ro
       - ./config/vhost.d:/etc/nginx/vhost.d:ro
@@ -194,7 +194,7 @@ services:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
       ROLE_CONNECTION_LIMIT: "15"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock:ro
     expose:
       - "8080"
     depends_on:
@@ -227,7 +227,7 @@ services:
       DOCKER_SOCKET: "/var/run/docker.sock"
       ALLOWED_SERVICE: "admin"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock:ro
       - /etc/os-release:/host/etc/os-release:ro
     deploy:
       resources:
