@@ -85,7 +85,7 @@ func TestHostMetricParsersAndRing(t *testing.T) {
 func TestLogDemuxSanitizeRedactAndSearch(t *testing.T) {
 	// 1. Multiplexed stdcopy framing (stdout + stderr)
 	var frames bytes.Buffer
-	frames.Write(encodeStdCopyFrame(1, "2026-11-22T12:00:01Z {\"host\":\"artifact.cubus.sh\",\"status\":502,\"request\":\"GET /mcp HTTP/2\",\"request_time\":0.123,\"cf_connecting_ip\":\"203.0.113.5\"}\n"))
+	frames.Write(encodeStdCopyFrame(1, "2026-11-22T12:00:01Z {\"host\":\"artifact.cubus.sh\",\"status\":502,\"request\":\"GET /mcp HTTP/2\",\"request_time\":0.123,\"cf_connecting_ip\":\"203.0.113.5\",\"user_agent\":\"sqlmap/1.8\",\"referer\":\"https://probe.example/\"}\n"))
 	frames.Write(encodeStdCopyFrame(2, "2026-11-22T12:00:02Z \x1b[31mERROR\x1b[0m connect postgres://svc_art:supersecret@postgres:5432/svc_art Authorization: Bearer tok_abc123\n"))
 
 	var lines []LogEntry
@@ -96,8 +96,8 @@ func TestLogDemuxSanitizeRedactAndSearch(t *testing.T) {
 	if err != nil || len(lines) != 2 {
 		t.Fatalf("expected 2 demuxed lines, got %d err=%v", len(lines), err)
 	}
-	if lines[0].Structured == nil || lines[0].Structured.Status != 502 || lines[0].Level != "error" {
-		t.Fatalf("expected parsed nginx 502 log, got %+v", lines[0])
+	if lines[0].Structured == nil || lines[0].Structured.Status != 502 || lines[0].Level != "error" || lines[0].Structured.UserAgent != "sqlmap/1.8" || lines[0].Structured.Referer != "https://probe.example/" {
+		t.Fatalf("expected parsed nginx 502 log with ua/referer, got %+v", lines[0])
 	}
 	if strings.Contains(lines[1].Message, "supersecret") || strings.Contains(lines[1].Message, "tok_abc123") || strings.Contains(lines[1].Message, "\x1b") {
 		t.Fatalf("secrets or ANSI codes leaked: %q", lines[1].Message)
@@ -136,6 +136,32 @@ func TestLogDemuxSanitizeRedactAndSearch(t *testing.T) {
 		strings.Contains(parsed.Message, "\x1b") ||
 		!strings.Contains(parsed.Message, "[REDACTED]") {
 		t.Fatalf("JSON redaction/re-sanitization failed: %+v", parsed)
+	}
+
+	// 5. Escaped quotes inside attacker-controlled password=... field must NOT break JSON unmarshal.
+	escapedQuoteJSON := `2026-11-26T00:00:01Z {"host":"cubus.sh","status":404,"client_ip":"198.51.100.7","cf_connecting_ip":"203.0.113.99","request":"GET /search?password=x\"y&id=1%20UNION%20SELECT%201,2,3-- HTTP/2","user_agent":"password=a\"b sqlmap/1.8","referer":"https://admin.cubus.sh/auth/google/callback?code=oauth_code_123&api_key=k_999&authorization=Bearer%20tok_url_77"}`
+	escParsed := ParseDockerLogLine("nginx-proxy", "stdout", escapedQuoteJSON)
+	if escParsed.Structured == nil {
+		t.Fatalf("expected structured nginx log despite escaped quotes in password field, got %+v", escParsed)
+	}
+	// Prefer nginx real_ip-validated client_ip over raw cf_connecting_ip header.
+	if escParsed.Structured.ClientIP != "198.51.100.7" {
+		t.Fatalf("expected real_ip-validated client_ip 198.51.100.7, got %q", escParsed.Structured.ClientIP)
+	}
+	if !strings.Contains(escParsed.Structured.Request, "UNION%20SELECT") || !strings.Contains(escParsed.Structured.UserAgent, "sqlmap/1.8") {
+		t.Fatalf("attack payloads lost after escaped-quote JSON parsing: %+v", escParsed.Structured)
+	}
+	if strings.Contains(escParsed.Structured.Referer, "oauth_code_123") ||
+		strings.Contains(escParsed.Structured.Referer, "k_999") ||
+		strings.Contains(escParsed.Structured.Referer, "tok_url_77") {
+		t.Fatalf("query secrets leaked in referer: %q", escParsed.Structured.Referer)
+	}
+
+	// 6. Multi-cookie header redaction must redact all subsequent cookies after ';'.
+	cookieLine := `2026-11-26T00:00:02Z WARN Cookie: _ga=1; cubus_session=eyJ_secret_jwt; CF_Authorization=cf_secret_jwt`
+	cookieParsed := ParseDockerLogLine("admin", "stderr", cookieLine)
+	if strings.Contains(cookieParsed.Message, "eyJ_secret_jwt") || strings.Contains(cookieParsed.Message, "cf_secret_jwt") {
+		t.Fatalf("multi-cookie secrets leaked: %q", cookieParsed.Message)
 	}
 }
 

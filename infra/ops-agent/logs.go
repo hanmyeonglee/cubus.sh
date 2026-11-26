@@ -41,9 +41,14 @@ var (
 		repl string
 	}{
 		{regexp.MustCompile(`(?i)(postgres(?:ql)?://)[^@\s"'\\]+(@)`), `${1}[REDACTED]${2}`},
-		{regexp.MustCompile(`(?i)("?authorization"?\s*[:=]\s*"?bearer\s+)[^\s"',}\]]+`), `${1}[REDACTED]`},
-		{regexp.MustCompile(`(?i)("?(?:set-)?cookie"?\s*[:=]\s*"?)[^\r\n;"'}\]]+`), `${1}[REDACTED]`},
-		{regexp.MustCompile(`(?i)("?(?:password|client_secret|access_token|refresh_token)"?\s*[:=]\s*"?)[^"\s,&}\]]+`), `${1}[REDACTED]`},
+		// Redact Bearer tokens in headers, JSON, User-Agent, or URL-encoded query strings.
+		{regexp.MustCompile(`(?i)(\bbearer(?:\s|%20|\+)+)[^\s"',&;}\]]+`), `${1}[REDACTED]`},
+		// Redact entire Cookie / Set-Cookie header value (including all ';' separated cookies).
+		{regexp.MustCompile(`(?i)("?(?:set-)?cookie"?\s*[:=]\s*"?)[^\r\n"'}\]]+`), `${1}[REDACTED]`},
+		// Redact sensitive KV / JSON / query-string secrets (including percent-encoded '=').
+		{regexp.MustCompile(`(?i)(\b(?:password|client_secret|access_token|refresh_token|id_token|api_?key|secret|token)"?\s*(?:[:=]|%3[dD])\s*"?)[^"\s,&;}\]]+`), `${1}[REDACTED]`},
+		// Redact OAuth authorization codes in query strings without mangling JSON error codes.
+		{regexp.MustCompile(`(?i)((?:[?&]|%26)code(?:=|%3[dD]))[^"\s,&;}\]]+`), `${1}[REDACTED]`},
 	}
 )
 
@@ -55,6 +60,8 @@ type StructuredLog struct {
 	ClientIP    string   `json:"client_ip,omitempty"`
 	Upstream    string   `json:"upstream,omitempty"`
 	CFRay       string   `json:"cf_ray,omitempty"`
+	UserAgent   string   `json:"user_agent,omitempty"`
+	Referer     string   `json:"referer,omitempty"`
 }
 
 type LogEntry struct {
@@ -104,8 +111,9 @@ func SanitizeAndRedact(raw string) string {
 	return out
 }
 
-// ParseDockerLogLine splits the leading Docker RFC3339 timestamp, strips ANSI/control chars,
-// redacts sensitive patterns, and parses nginx-proxy / slog JSON payloads when present.
+// ParseDockerLogLine splits the leading Docker RFC3339 timestamp, parses JSON payloads
+// before redaction (so escaped quotes inside attacker-controlled fields are never corrupted),
+// strips ANSI/control chars, and redacts sensitive patterns on every emitted string field.
 func ParseDockerLogLine(service, stream, rawLine string) LogEntry {
 	ts := time.Now().UTC()
 	payload := rawLine
@@ -116,18 +124,17 @@ func ParseDockerLogLine(service, stream, rawLine string) LogEntry {
 		}
 	}
 
-	safe := SanitizeAndRedact(strings.TrimSpace(payload))
-	entry := LogEntry{
-		Timestamp: ts,
-		Service:   service,
-		Stream:    stream,
-		Level:     inferLevel(stream, safe),
-		Message:   safe,
-	}
-
-	if strings.HasPrefix(safe, "{") && strings.HasSuffix(safe, "}") {
+	trimmed := strings.TrimSpace(payload)
+	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
 		var obj map[string]any
-		if err := json.Unmarshal([]byte(safe), &obj); err == nil {
+		if err := json.Unmarshal([]byte(trimmed), &obj); err == nil {
+			entry := LogEntry{
+				Timestamp: ts,
+				Service:   service,
+				Stream:    stream,
+				Level:     inferLevel(stream, SanitizeAndRedact(trimmed)),
+				Message:   SanitizeAndRedact(trimmed),
+			}
 			if lvl, ok := obj["level"].(string); ok && lvl != "" {
 				entry.Level = normalizeLevel(lvl)
 			}
@@ -158,9 +165,10 @@ func ParseDockerLogLine(service, stream, rawLine string) LogEntry {
 				if rt, ok := obj["request_time"].(float64); ok {
 					st.RequestTime = &rt
 				}
-				if ip, ok := obj["cf_connecting_ip"].(string); ok && ip != "" {
+				// Prefer nginx real_ip-validated client_ip ($remote_addr) over raw cf_connecting_ip header.
+				if ip, ok := obj["client_ip"].(string); ok && ip != "" && ip != "-" {
 					st.ClientIP = SanitizeAndRedact(ip)
-				} else if ip, ok := obj["client_ip"].(string); ok {
+				} else if ip, ok := obj["cf_connecting_ip"].(string); ok && ip != "" && ip != "-" {
 					st.ClientIP = SanitizeAndRedact(ip)
 				}
 				if up, ok := obj["upstream_addr"].(string); ok {
@@ -169,12 +177,27 @@ func ParseDockerLogLine(service, stream, rawLine string) LogEntry {
 				if ray, ok := obj["cf_ray"].(string); ok {
 					st.CFRay = SanitizeAndRedact(ray)
 				}
+				if ua, ok := obj["user_agent"].(string); ok && ua != "" && ua != "-" {
+					st.UserAgent = SanitizeAndRedact(ua)
+				}
+				if ref, ok := obj["referer"].(string); ok && ref != "" && ref != "-" {
+					st.Referer = SanitizeAndRedact(ref)
+				}
 				entry.Structured = st
 				entry.Message = fmt.Sprintf("%d %s %s", st.Status, st.Host, st.Request)
 			}
+			return entry
 		}
 	}
-	return entry
+
+	safe := SanitizeAndRedact(trimmed)
+	return LogEntry{
+		Timestamp: ts,
+		Service:   service,
+		Stream:    stream,
+		Level:     inferLevel(stream, safe),
+		Message:   safe,
+	}
 }
 
 func inferLevel(stream, msg string) string {
@@ -375,7 +398,7 @@ func matchLogEntry(e LogEntry, p LogSearchParams, re *regexp.Regexp) bool {
 	if p.Query != "" {
 		haystack := e.Message
 		if e.Structured != nil {
-			haystack = e.Message + " " + e.Structured.ClientIP + " " + e.Structured.Upstream + " " + e.Structured.CFRay
+			haystack = e.Message + " " + e.Structured.ClientIP + " " + e.Structured.Upstream + " " + e.Structured.CFRay + " " + e.Structured.UserAgent + " " + e.Structured.Referer
 		}
 		if re != nil {
 			if !re.MatchString(haystack) {
