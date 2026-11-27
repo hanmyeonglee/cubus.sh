@@ -57,15 +57,21 @@ services:
     environment:
       VIRTUAL_HOST: audown.cubus.sh
       VIRTUAL_PORT: "8080"
+      PUBLIC_BASE_URL: "https://audown.cubus.sh"
+      DB_BROKER_URL: "http://db-broker:8080/v1/database"
       ADMIN_BIND_CIDR: "172.31.0.0/24"
       ADMIN_ALLOW_CIDR: "172.31.0.2/32"
     labels:
       cubus.admin.port: "9090"
       cubus.admin.name: "audown"
+    depends_on:
+      db-broker:
+        condition: service_healthy
     logging: *default-logging
     networks:
       - web
       - web-external
+      - db
       - admin
 
   choice:
@@ -76,14 +82,19 @@ services:
     environment:
       VIRTUAL_HOST: choice.cubus.sh
       VIRTUAL_PORT: "8000"
+      DB_BROKER_URL: "http://db-broker:8080/v1/database"
       ADMIN_BIND_CIDR: "172.31.0.0/24"
       ADMIN_ALLOW_CIDR: "172.31.0.2/32"
     labels:
       cubus.admin.port: "9090"
       cubus.admin.name: "choice"
+    depends_on:
+      db-broker:
+        condition: service_healthy
     logging: *default-logging
     networks:
       - web
+      - db
       - admin
 
   artifact:
